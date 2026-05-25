@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AudioForge — 本地音频工作室</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0a0f;--bg2:#12121a;--bg3:#1a1a26;
+  --border:rgba(255,255,255,0.08);--border2:rgba(255,255,255,0.15);
+  --text:#f0eff8;--muted:#7c7b91;
+  --accent:#7b6ef6;--accent2:#5ce0c4;
+  --danger:#f05a5a;--success:#4ecb8c;
+  --mono:'Space Mono',monospace;--sans:'DM Sans',sans-serif;
+}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.6;min-height:100vh}
+.wrap{max-width:860px;margin:0 auto;padding:2rem 1.5rem 5rem}
+
+header{display:flex;align-items:center;gap:14px;margin-bottom:2.5rem}
+.logo-mark{width:40px;height:40px;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:20px}
+.logo-text h1{font-family:var(--mono);font-size:1.15rem;font-weight:700;letter-spacing:-0.5px}
+.logo-text p{font-size:12px;color:var(--muted);margin-top:1px}
+.badge{margin-left:auto;background:rgba(92,224,196,0.12);border:1px solid rgba(92,224,196,0.25);color:var(--accent2);font-size:11px;font-family:var(--mono);padding:4px 10px;border-radius:20px;white-space:nowrap}
+
+/* Status banner */
+#banner{background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:1rem 1.25rem;margin-bottom:1.5rem;display:flex;align-items:center;gap:12px;font-size:13px}
+#banner .bi{font-size:20px;flex-shrink:0}
+#banner strong{color:var(--text);display:block}
+#banner p{color:var(--muted)}
+.spinner{width:22px;height:22px;border:2px solid rgba(255,255,255,0.1);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Drop zone */
+#dropzone{border:1.5px dashed var(--border2);border-radius:16px;padding:3rem 2rem;text-align:center;cursor:pointer;transition:all 0.2s;background:var(--bg2)}
+#dropzone:hover,#dropzone.drag-over{border-color:var(--accent);background:rgba(123,110,246,0.04)}
+.drop-icon{font-size:2.2rem;margin-bottom:0.8rem}
+#dropzone h2{font-size:1rem;font-weight:500;margin-bottom:0.3rem}
+#dropzone p{font-size:13px;color:var(--muted)}
+#dropzone input[type=file]{display:none}
+.formats-row{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:1rem}
+.fmt-pill{background:var(--bg3);border:1px solid var(--border);border-radius:20px;padding:3px 10px;font-size:11px;font-family:var(--mono);color:var(--muted)}
+
+/* File list */
+#file-list{margin-top:1rem;display:flex;flex-direction:column;gap:8px}
+.file-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:0.85rem 1.1rem;display:flex;align-items:center;gap:10px}
+.file-ext{width:32px;height:32px;background:var(--bg3);border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9px;color:var(--accent2);font-weight:700;flex-shrink:0}
+.file-info{flex:1;min-width:0}
+.file-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.file-meta{font-size:11px;color:var(--muted);margin-top:1px}
+.file-rm{background:none;border:none;color:var(--muted);cursor:pointer;font-size:15px;padding:3px 6px;border-radius:5px;line-height:1}
+.file-rm:hover{color:var(--danger)}
+
+/* Waveform */
+#wave-wrap{margin-top:1rem;display:none}
+#wave-canvas{width:100%;height:68px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;display:block;cursor:pointer}
+#wave-meta{font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:4px}
+#wave-player{margin-top:8px;display:none;align-items:center;gap:10px}
+#play-btn{background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-size:13px;padding:6px 14px;border-radius:8px;cursor:pointer;transition:all 0.15s}
+#play-btn:hover{border-color:var(--accent);color:var(--accent)}
+#play-time{font-family:var(--mono);font-size:12px;color:var(--muted)}
+
+/* Tabs */
+.tab-bar{display:flex;gap:2px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:3px;margin:1.8rem 0 1.4rem}
+.tab-btn{flex:1;background:none;border:none;color:var(--muted);font-family:var(--sans);font-size:13px;padding:8px 4px;border-radius:7px;cursor:pointer;transition:all 0.15s;white-space:nowrap}
+.tab-btn.active{background:var(--bg3);color:var(--text);font-weight:500}
+.tab-btn:hover:not(.active){color:var(--text)}
+.panel{display:none}.panel.active{display:block}
+
+/* Options grid */
+.og{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+@media(max-width:540px){.og{grid-template-columns:1fr}}
+.field{display:flex;flex-direction:column;gap:5px}
+.field label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-family:var(--mono)}
+.field select,.field input[type=number]{background:var(--bg3);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:8px 12px;font-size:14px;font-family:var(--sans);outline:none;width:100%;transition:border-color 0.15s}
+.field select{appearance:none;padding-right:32px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='11' height='7' viewBox='0 0 11 7'%3E%3Cpath d='M1 1l4.5 4.5L10 1' stroke='%237c7b91' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 11px center;cursor:pointer}
+.field select:focus,.field select:hover,.field input[type=number]:focus{border-color:var(--accent)}
+
+.rw{display:flex;align-items:center;gap:10px}
+.rw input[type=range]{flex:1;-webkit-appearance:none;height:3px;background:var(--bg3);border-radius:2px;outline:none;cursor:pointer}
+.rw input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:15px;height:15px;background:var(--accent);border-radius:50%;cursor:pointer}
+.rv{font-family:var(--mono);font-size:12px;color:var(--accent2);min-width:52px;text-align:right}
+
+.tr{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border)}
+.tr:last-child{border-bottom:none}
+.tr-l span{font-size:14px}.tr-l small{display:block;font-size:12px;color:var(--muted);margin-top:1px}
+.tg{width:36px;height:20px;background:var(--bg3);border:1px solid var(--border2);border-radius:10px;cursor:pointer;position:relative;transition:background 0.2s;flex-shrink:0}
+.tg::after{content:'';position:absolute;left:3px;top:3px;width:12px;height:12px;background:var(--muted);border-radius:50%;transition:all 0.2s}
+.tg.on{background:var(--accent);border-color:var(--accent)}.tg.on::after{left:19px;background:white}
+
+.info-box{background:rgba(92,224,196,0.05);border:1px solid rgba(92,224,196,0.15);border-radius:10px;padding:0.85rem 1rem;font-size:13px;color:var(--muted);line-height:1.7;margin-bottom:1.2rem}
+.info-box strong{color:var(--accent2)}
+
+.action-bar{margin-top:1.8rem;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+#go-btn{background:linear-gradient(135deg,var(--accent),#5b4fd4);border:none;color:white;font-family:var(--sans);font-size:15px;font-weight:500;padding:11px 26px;border-radius:10px;cursor:pointer;transition:all 0.2s;display:flex;align-items:center;gap:8px}
+#go-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 8px 24px rgba(123,110,246,0.35)}
+#go-btn:disabled{opacity:0.35;cursor:not-allowed}
+#status{font-size:13px;color:var(--muted)}
+
+#prog-wrap{margin-top:1rem;display:none}
+.pb-bg{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden}
+.pb-fg{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0%;transition:width 0.15s;border-radius:2px}
+.pb-lbl{font-size:11px;color:var(--muted);margin-top:5px;font-family:var(--mono)}
+
+#results{margin-top:1.5rem}
+.rc{background:var(--bg2);border:1px solid rgba(78,203,140,0.3);border-radius:12px;padding:0.9rem 1.1rem;display:flex;align-items:center;gap:10px;margin-bottom:8px;animation:si 0.25s ease}
+@keyframes si{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+.rc-icon{width:32px;height:32px;background:rgba(78,203,140,0.1);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
+.rc-info{flex:1;min-width:0}
+.rc-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rc-meta{font-size:12px;color:var(--muted);margin-top:2px}
+.rc-save{color:var(--success)}.rc-grow{color:#f7c948}
+.dl-btn{background:rgba(78,203,140,0.1);border:1px solid rgba(78,203,140,0.3);color:var(--success);font-size:13px;padding:6px 13px;border-radius:7px;cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;flex-shrink:0;white-space:nowrap;font-family:var(--sans)}
+.dl-btn:hover{background:rgba(78,203,140,0.18)}
+.err-card{background:var(--bg2);border:1px solid rgba(240,90,90,0.3);border-radius:12px;padding:0.9rem 1.1rem;display:flex;gap:10px;margin-bottom:8px;font-size:13px;color:var(--danger);align-items:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="logo-mark">🎛</div>
+  <div class="logo-text">
+    <h1>AudioForge</h1>
+    <p>本地音频处理工作室 · 全程离线，文件不会上传到任何服务器</p>
+  </div>
+  <span class="badge">纯本地</span>
+</header>
+
+<div id="banner">
+  <div class="spinner" id="b-spin"></div>
+  <div>
+    <strong id="b-title">正在加载 MP3 编码库...</strong>
+    <p id="b-desc">lamejs 单文件构建，约 200KB，加载完成即可使用</p>
+  </div>
+</div>
+
+<div id="dropzone" onclick="document.getElementById('fi').click()">
+  <div class="drop-icon">🎵</div>
+  <h2>拖放音频文件到这里，或点击选择</h2>
+  <p>支持批量处理 · 浏览器原生解码 · 完全本地运算</p>
+  <div class="formats-row">
+    <span class="fmt-pill">MP3 ✓</span>
+    <span class="fmt-pill">WAV ✓</span>
+    <span class="fmt-pill">AAC / M4A ✓</span>
+    <span class="fmt-pill">OGG ✓</span>
+    <span class="fmt-pill">FLAC ✓</span>
+    <span class="fmt-pill">OPUS ✓</span>
+    <span class="fmt-pill">AIFF ✓</span>
+  </div>
+  <input type="file" id="fi" accept="audio/*" multiple>
+</div>
+
+<div id="file-list"></div>
+
+<div id="wave-wrap">
+  <canvas id="wave-canvas"></canvas>
+  <div id="wave-meta"></div>
+  <div id="wave-player">
+    <button id="play-btn" onclick="togglePlay()">▶ 播放预览</button>
+    <span id="play-time">0:00 / 0:00</span>
+  </div>
+</div>
+
+<div class="tab-bar" id="main-tabs" style="display:none">
+  <button class="tab-btn active" data-tab="convert">🔄 格式转换</button>
+  <button class="tab-btn" data-tab="compress">📦 压缩优化</button>
+  <button class="tab-btn" data-tab="enhance">✨ 音频处理</button>
+  <button class="tab-btn" data-tab="split">✂️ 裁剪分割</button>
+</div>
+
+<!-- 格式转换 -->
+<div class="panel active" id="tab-convert">
+  <div class="og">
+    <div class="field">
+      <label>输出格式</label>
+      <select id="fmt">
+        <option value="mp3">MP3 — 最广兼容</option>
+        <option value="wav">WAV — 原始无损 (PCM)</option>
+        <option value="wav32">WAV 32-bit Float — 专业</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>采样率</label>
+      <select id="sr">
+        <option value="0">保持原始</option>
+        <option value="8000">8,000 Hz — 电话质量</option>
+        <option value="22050">22,050 Hz — FM 广播</option>
+        <option value="44100">44,100 Hz — CD 标准</option>
+        <option value="48000">48,000 Hz — 专业视频</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>声道</label>
+      <select id="ch">
+        <option value="0">保持原始</option>
+        <option value="1">单声道 (Mono)</option>
+        <option value="2">立体声 (Stereo)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>MP3 比特率</label>
+      <select id="br">
+        <option value="64">64 kbps — 语音</option>
+        <option value="96">96 kbps — 普通</option>
+        <option value="128" selected>128 kbps — 标准</option>
+        <option value="192">192 kbps — 高质</option>
+        <option value="256">256 kbps — 优质</option>
+        <option value="320">320 kbps — 极品</option>
+      </select>
+    </div>
+  </div>
+</div>
+
+<!-- 压缩优化 -->
+<div class="panel" id="tab-compress">
+  <div class="info-box"><strong>智能压缩</strong> — 浏览器原生解码后重新编码为 MP3，可大幅缩减体积。适合播客、有声书、语音备忘录。</div>
+  <div class="og">
+    <div class="field">
+      <label>压缩模式</label>
+      <select id="cmode">
+        <option value="voice">语音极限压缩（单声道 32kbps）</option>
+        <option value="podcast">播客模式（单声道 64kbps）</option>
+        <option value="balanced" selected>均衡模式（128kbps）</option>
+        <option value="hq">高质量（256kbps）</option>
+        <option value="custom">自定义</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>自定义码率</label>
+      <div class="rw">
+        <input type="range" id="cbr" min="32" max="320" value="128" step="8">
+        <span class="rv" id="cbr-val">128 kbps</span>
+      </div>
+    </div>
+  </div>
+  <div style="margin-top:0.8rem">
+    <div class="tr"><div class="tr-l"><span>强制单声道</span><small>将立体声混合为单声道，体积减半</small></div><div class="tg" id="tg-mono" onclick="this.classList.toggle('on')"></div></div>
+    <div class="tr"><div class="tr-l"><span>音量标准化</span><small>统一响度，消除各文件音量差异</small></div><div class="tg" id="tg-norm" onclick="this.classList.toggle('on')"></div></div>
+  </div>
+</div>
+
+<!-- 音频处理 -->
+<div class="panel" id="tab-enhance">
+  <div class="info-box"><strong>音频处理</strong> — 基于 Web Audio API 在浏览器本地实时运算，支持音量、速度、均衡器、淡入淡出等效果。</div>
+  <div class="og">
+    <div class="field">
+      <label>音量增益</label>
+      <div class="rw"><input type="range" id="vol" min="-20" max="20" value="0" step="1"><span class="rv" id="vol-val">0 dB</span></div>
+    </div>
+    <div class="field">
+      <label>播放速度（变速不变调）</label>
+      <div class="rw"><input type="range" id="spd" min="0.25" max="4" value="1" step="0.05"><span class="rv" id="spd-val">1.00×</span></div>
+    </div>
+    <div class="field">
+      <label>淡入时长</label>
+      <div class="rw"><input type="range" id="fin" min="0" max="10" value="0" step="0.5"><span class="rv" id="fin-val">0 s</span></div>
+    </div>
+    <div class="field">
+      <label>淡出时长</label>
+      <div class="rw"><input type="range" id="fout" min="0" max="10" value="0" step="0.5"><span class="rv" id="fout-val">0 s</span></div>
+    </div>
+    <div class="field">
+      <label>低音增强 (80 Hz)</label>
+      <div class="rw"><input type="range" id="bass" min="-15" max="15" value="0" step="1"><span class="rv" id="bass-val">0 dB</span></div>
+    </div>
+    <div class="field">
+      <label>高音增益 (12 kHz)</label>
+      <div class="rw"><input type="range" id="treble" min="-15" max="15" value="0" step="1"><span class="rv" id="treble-val">0 dB</span></div>
+    </div>
+    <div class="field">
+      <label>中频增益 (1 kHz)</label>
+      <div class="rw"><input type="range" id="mid" min="-15" max="15" value="0" step="1"><span class="rv" id="mid-val">0 dB</span></div>
+    </div>
+    <div class="field">
+      <label>输出格式</label>
+      <select id="efmt"><option value="mp3">MP3</option><option value="wav">WAV</option></select>
+    </div>
+  </div>
+  <div style="margin-top:0.8rem">
+    <div class="tr"><div class="tr-l"><span>左右声道互换</span><small>交换 L/R 声道</small></div><div class="tg" id="tg-swap" onclick="this.classList.toggle('on')"></div></div>
+    <div class="tr"><div class="tr-l"><span>音频倒放</span><small>将音频时间轴完全翻转</small></div><div class="tg" id="tg-rev" onclick="this.classList.toggle('on')"></div></div>
+  </div>
+</div>
+
+<!-- 裁剪分割 -->
+<div class="panel" id="tab-split">
+  <div class="info-box"><strong>裁剪与分割</strong> — 精确到秒级截取，支持单段截取或按时长批量分段。</div>
+  <div class="og">
+    <div class="field"><label>开始时间（秒）</label><input type="number" id="tstart" value="0" min="0" step="0.1"></div>
+    <div class="field"><label>结束时间（秒，0 = 结尾）</label><input type="number" id="tend" value="0" min="0" step="0.1"></div>
+    <div class="field">
+      <label>自动分段</label>
+      <select id="sseg">
+        <option value="0">不分段，直接截取</option>
+        <option value="30">每 30 秒一段</option>
+        <option value="60">每 60 秒一段</option>
+        <option value="120">每 2 分钟一段</option>
+        <option value="300">每 5 分钟一段</option>
+        <option value="600">每 10 分钟一段</option>
+      </select>
+    </div>
+    <div class="field"><label>输出格式</label><select id="sfmt"><option value="mp3">MP3</option><option value="wav">WAV</option></select></div>
+  </div>
+</div>
+
+<div class="action-bar" id="action-bar" style="display:none">
+  <button id="go-btn" disabled>
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+    开始处理
+  </button>
+  <span id="status"></span>
+</div>
+
+<div id="prog-wrap">
+  <div class="pb-bg"><div class="pb-fg" id="pb"></div></div>
+  <div class="pb-lbl" id="pb-lbl"></div>
+</div>
+<div id="results"></div>
+</div>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────
+let files = [];
+let lameReady = false;
+let Mp3Encoder;
+let audioCtx = null;
+let previewSource = null;
+let previewBuffer = null;
+let previewPlaying = false;
+let previewStart = 0;
+let previewOffset = 0;
+
+// ─── Load lamejs ──────────────────────────────────────────────────────────
+function loadScript(url) {
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = url;
+    s.onload = res;
+    s.onerror = () => rej(new Error('Failed to load: ' + url));
+    document.head.appendChild(s);
+  });
+}
+
+async function initLame() {
+  try {
+    // Try unpkg first, then jsdelivr as fallback
+    const urls = [
+      'https://unpkg.com/lamejs@1.2.1/lame.min.js',
+      'https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js',
+    ];
+    let loaded = false;
+    for (const url of urls) {
+      try { await loadScript(url); loaded = true; break; } catch(e) {}
+    }
+    if (!loaded) throw new Error('所有 CDN 均无法加载');
+    if (typeof lamejs === 'undefined') throw new Error('lamejs 全局变量未定义');
+    Mp3Encoder = lamejs.Mp3Encoder;
+    lameReady = true;
+    setBanner('✅', 'MP3 编码库已就绪', 'Web Audio API + lamejs，全程本地运算，支持任意来源打开的 HTML 文件', true);
+    if (files.length) document.getElementById('go-btn').disabled = false;
+  } catch(e) {
+    setBanner('⚠️', 'MP3 编码库加载失败', '错误: ' + e.message + '。WAV 无损导出仍可正常使用。', false);
+    lameReady = false; // WAV export still works
+    if (files.length) document.getElementById('go-btn').disabled = false;
+  }
+}
+
+function setBanner(icon, title, desc, ok) {
+  const b = document.getElementById('banner');
+  b.innerHTML = `<span style="font-size:20px">${icon}</span><div><strong style="color:${ok?'var(--success)':'var(--accent3)'}">${title}</strong><p style="font-size:13px;color:var(--muted)">${desc}</p></div>`;
+}
+
+// ─── Tabs ──────────────────────────────────────────────────────────────────
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-'+btn.dataset.tab).classList.add('active');
+  };
+});
+
+// ─── File handling ─────────────────────────────────────────────────────────
+const dz = document.getElementById('dropzone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); addFiles(e.dataTransfer.files); });
+document.getElementById('fi').onchange = e => addFiles(e.target.files);
+
+const fmtSize = b => b < 1024 ? b+'B' : b < 1048576 ? (b/1024).toFixed(1)+'KB' : (b/1048576).toFixed(2)+'MB';
+const getExt = n => n.split('.').pop().toUpperCase();
+
+function addFiles(list) {
+  for (const f of list) {
+    if (!files.find(x=>x.name===f.name&&x.size===f.size)) files.push(f);
+  }
+  renderFiles();
+  if (files.length) {
+    document.getElementById('main-tabs').style.display = 'flex';
+    document.getElementById('action-bar').style.display = 'flex';
+    if (lameReady || true) document.getElementById('go-btn').disabled = false;
+    drawWaveform(files[files.length-1]);
+  }
+}
+
+function renderFiles() {
+  const el = document.getElementById('file-list');
+  el.innerHTML = '';
+  files.forEach((f,i) => {
+    el.innerHTML += `<div class="file-card">
+      <div class="file-ext">${getExt(f.name)}</div>
+      <div class="file-info"><div class="file-name">${f.name}</div><div class="file-meta">${fmtSize(f.size)}</div></div>
+      <button class="file-rm" onclick="files.splice(${i},1);renderFiles();if(!files.length){document.getElementById('main-tabs').style.display='none';document.getElementById('action-bar').style.display='none';document.getElementById('wave-wrap').style.display='none';}">✕</button>
+    </div>`;
+  });
+}
+
+// ─── Waveform & preview ────────────────────────────────────────────────────
+async function drawWaveform(file) {
+  const wrap = document.getElementById('wave-wrap');
+  wrap.style.display = 'block';
+  const canvas = document.getElementById('wave-canvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.offsetWidth, H = 68;
+  canvas.width = W * devicePixelRatio;
+  canvas.height = H * devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  ctx.clearRect(0,0,W,H);
+
+  try {
+    if (!audioCtx) audioCtx = new AudioContext();
+    const buf = await file.arrayBuffer();
+    previewBuffer = await audioCtx.decodeAudioData(buf);
+
+    const data = previewBuffer.getChannelData(0);
+    const step = Math.ceil(data.length / W);
+    for (let x = 0; x < W; x++) {
+      let mx = 0;
+      for (let j = 0; j < step; j++) { const v=Math.abs(data[x*step+j]||0); if(v>mx)mx=v; }
+      const bh = mx * H * 0.82;
+      const g = ctx.createLinearGradient(0,H/2-bh,0,H/2+bh);
+      g.addColorStop(0,'rgba(123,110,246,0.85)');
+      g.addColorStop(1,'rgba(92,224,196,0.4)');
+      ctx.fillStyle = g;
+      ctx.fillRect(x, H/2-bh, 1, bh*2);
+    }
+
+    const dur = previewBuffer.duration;
+    const mins = Math.floor(dur/60), secs = String(Math.floor(dur%60)).padStart(2,'0');
+    document.getElementById('wave-meta').textContent =
+      `${file.name}  ·  ${mins}:${secs}  ·  ${previewBuffer.sampleRate} Hz  ·  ${previewBuffer.numberOfChannels}ch`;
+    document.getElementById('wave-player').style.display = 'flex';
+
+    canvas.onclick = (e) => {
+      const ratio = e.offsetX / W;
+      previewOffset = ratio * dur;
+      if (previewPlaying) { stopPreview(); startPreview(); }
+    };
+  } catch(e) {
+    document.getElementById('wave-meta').textContent = '无法解码波形（可能是 DRM 保护或格式不支持）';
+  }
+}
+
+function togglePlay() {
+  if (previewPlaying) { stopPreview(); }
+  else { startPreview(); }
+}
+function startPreview() {
+  if (!previewBuffer || !audioCtx) return;
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  previewSource = audioCtx.createBufferSource();
+  previewSource.buffer = previewBuffer;
+  previewSource.connect(audioCtx.destination);
+  previewSource.start(0, previewOffset);
+  previewStart = audioCtx.currentTime - previewOffset;
+  previewPlaying = true;
+  document.getElementById('play-btn').textContent = '⏹ 停止';
+  previewSource.onended = () => { previewPlaying = false; previewOffset = 0; document.getElementById('play-btn').textContent = '▶ 播放预览'; };
+  updatePlayTime();
+}
+function stopPreview() {
+  if (previewSource) { try { previewSource.stop(); } catch(e){} }
+  previewPlaying = false;
+  previewOffset = 0;
+  document.getElementById('play-btn').textContent = '▶ 播放预览';
+}
+function updatePlayTime() {
+  if (!previewPlaying || !previewBuffer) return;
+  const cur = audioCtx.currentTime - previewStart;
+  const dur = previewBuffer.duration;
+  const fmt2 = t => `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
+  document.getElementById('play-time').textContent = `${fmt2(cur)} / ${fmt2(dur)}`;
+  requestAnimationFrame(updatePlayTime);
+}
+
+// ─── Range controls ───────────────────────────────────────────────────────
+const ranges = [
+  ['vol', v => (v>0?'+':'')+v+' dB'],
+  ['spd', v => parseFloat(v).toFixed(2)+'×'],
+  ['fin', v => parseFloat(v).toFixed(1)+' s'],
+  ['fout', v => parseFloat(v).toFixed(1)+' s'],
+  ['bass', v => (v>0?'+':'')+v+' dB'],
+  ['treble', v => (v>0?'+':'')+v+' dB'],
+  ['mid', v => (v>0?'+':'')+v+' dB'],
+  ['cbr', v => v+' kbps'],
+];
+ranges.forEach(([id,fn]) => {
+  const el = document.getElementById(id);
+  const out = document.getElementById(id+'-val');
+  if (el && out) el.oninput = () => { out.textContent = fn(el.value); };
+});
+
+// ─── Audio processing pipeline ─────────────────────────────────────────────
+function getV(id) { return document.getElementById(id); }
+function val(id) { return getV(id).value; }
+function tog(id) { return getV(id).classList.contains('on'); }
+
+async function decodeFile(file) {
+  if (!audioCtx) audioCtx = new AudioContext();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+  const ab = await file.arrayBuffer();
+  return audioCtx.decodeAudioData(ab);
+}
+
+// Apply effects using OfflineAudioContext
+async function processBuffer(srcBuf, tab) {
+  const origSR = srcBuf.sampleRate;
+  const origCh = srcBuf.numberOfChannels;
+  const origLen = srcBuf.length;
+  const origDur = srcBuf.duration;
+
+  // Determine target params
+  let targetSR = origSR, targetCh = origCh;
+  let speed = 1, volDb = 0, fadeIn = 0, fadeOut = 0;
+  let bassGain = 0, trebleGain = 0, midGain = 0;
+  let swapLR = false, doReverse = false, normalize = false;
+  let trimStart = 0, trimEnd = origDur;
+
+  if (tab === 'convert') {
+    const srV = parseInt(val('sr')); if (srV) targetSR = srV;
+    const chV = parseInt(val('ch')); if (chV) targetCh = chV;
+  }
+  if (tab === 'compress') {
+    const cmode = val('cmode');
+    if (cmode === 'voice') { targetSR = 22050; targetCh = 1; }
+    else if (cmode === 'podcast') { targetSR = 22050; targetCh = 1; }
+    if (tog('tg-mono')) targetCh = 1;
+    normalize = tog('tg-norm');
+  }
+  if (tab === 'enhance') {
+    volDb = parseFloat(val('vol'));
+    speed = parseFloat(val('spd'));
+    fadeIn = parseFloat(val('fin'));
+    fadeOut = parseFloat(val('fout'));
+    bassGain = parseFloat(val('bass'));
+    trebleGain = parseFloat(val('treble'));
+    midGain = parseFloat(val('mid'));
+    swapLR = tog('tg-swap');
+    doReverse = tog('tg-rev');
+    if (parseInt(val('ch')||'0')) targetCh = parseInt(val('ch'));
+  }
+  if (tab === 'split') {
+    trimStart = parseFloat(val('tstart')) || 0;
+    const te = parseFloat(val('tend')) || 0;
+    trimEnd = te > 0 ? Math.min(te, origDur) : origDur;
+    if (trimEnd <= trimStart) trimEnd = origDur;
+    const srV = parseInt(val('sr')||'0'); if (srV) targetSR = srV;
+  }
+
+  // Clamp
+  trimStart = Math.max(0, Math.min(trimStart, origDur));
+  trimEnd = Math.max(trimStart + 0.01, Math.min(trimEnd, origDur));
+
+  const segDur = (trimEnd - trimStart) / speed;
+  const outLen = Math.ceil(segDur * targetSR);
+
+  const offline = new OfflineAudioContext(targetCh, outLen, targetSR);
+
+  // Source
+  const src = offline.createBufferSource();
+
+  // If swap LR: create a new buffer with channels swapped
+  let workBuf = srcBuf;
+  if (swapLR && srcBuf.numberOfChannels >= 2) {
+    workBuf = offline.createBuffer(srcBuf.numberOfChannels, srcBuf.length, srcBuf.sampleRate);
+    workBuf.copyToChannel(srcBuf.getChannelData(1), 0);
+    workBuf.copyToChannel(srcBuf.getChannelData(0), 1);
+  }
+  if (doReverse) {
+    // Copy to new buffer and reverse each channel
+    workBuf = new AudioBuffer({ numberOfChannels: workBuf.numberOfChannels, length: workBuf.length, sampleRate: workBuf.sampleRate });
+    for (let c = 0; c < srcBuf.numberOfChannels; c++) {
+      const d = srcBuf.getChannelData(c).slice().reverse();
+      workBuf.copyToChannel(d, c);
+    }
+  }
+
+  src.buffer = workBuf;
+  src.playbackRate.value = speed;
+
+  // Chain nodes
+  let node = src;
+
+  // Volume
+  const gainNode = offline.createGain();
+  gainNode.gain.value = Math.pow(10, volDb / 20);
+  node.connect(gainNode); node = gainNode;
+
+  // Normalize
+  if (normalize) {
+    let peak = 0;
+    for (let c = 0; c < srcBuf.numberOfChannels; c++) {
+      const d = srcBuf.getChannelData(c);
+      for (let i = 0; i < d.length; i++) { const v = Math.abs(d[i]); if (v > peak) peak = v; }
+    }
+    if (peak > 0.01) { gainNode.gain.value *= (0.9 / peak); }
+  }
+
+  // Fade in
+  if (fadeIn > 0) {
+    gainNode.gain.setValueAtTime(0, 0);
+    gainNode.gain.linearRampToValueAtTime(gainNode.gain.value, fadeIn);
+  }
+  // Fade out
+  if (fadeOut > 0) {
+    const startFade = Math.max(0, segDur - fadeOut);
+    gainNode.gain.setValueAtTime(gainNode.gain.value, startFade);
+    gainNode.gain.linearRampToValueAtTime(0.0001, segDur);
+  }
+
+  // EQ filters
+  if (bassGain !== 0) {
+    const f = offline.createBiquadFilter();
+    f.type = 'lowshelf'; f.frequency.value = 80; f.gain.value = bassGain;
+    node.connect(f); node = f;
+  }
+  if (midGain !== 0) {
+    const f = offline.createBiquadFilter();
+    f.type = 'peaking'; f.frequency.value = 1000; f.Q.value = 1; f.gain.value = midGain;
+    node.connect(f); node = f;
+  }
+  if (trebleGain !== 0) {
+    const f = offline.createBiquadFilter();
+    f.type = 'highshelf'; f.frequency.value = 10000; f.gain.value = trebleGain;
+    node.connect(f); node = f;
+  }
+
+  node.connect(offline.destination);
+  src.start(0, trimStart, trimEnd - trimStart);
+
+  return offline.startRendering();
+}
+
+// ─── Encoders ─────────────────────────────────────────────────────────────
+function encodeWAV(audioBuffer, is32bit) {
+  const numCh = audioBuffer.numberOfChannels;
+  const numSamples = audioBuffer.length;
+  const sr = audioBuffer.sampleRate;
+  const bitsPerSample = is32bit ? 32 : 16;
+  const bytesPerSample = bitsPerSample / 8;
+  const blockAlign = numCh * bytesPerSample;
+  const byteRate = sr * blockAlign;
+  const dataSize = numSamples * blockAlign;
+  const buf = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buf);
+
+  const setStr = (o, s) => { for (let i=0;i<s.length;i++) view.setUint8(o+i, s.charCodeAt(i)); };
+  setStr(0,'RIFF'); view.setUint32(4,36+dataSize,true);
+  setStr(8,'WAVE'); setStr(12,'fmt '); view.setUint32(16,16,true);
+  view.setUint16(20, is32bit?3:1, true); // PCM=1, IEEE_FLOAT=3
+  view.setUint16(22,numCh,true); view.setUint32(24,sr,true);
+  view.setUint32(28,byteRate,true); view.setUint16(32,blockAlign,true);
+  view.setUint16(34,bitsPerSample,true); setStr(36,'data');
+  view.setUint32(40,dataSize,true);
+
+  let offset = 44;
+  if (is32bit) {
+    for (let i=0;i<numSamples;i++) {
+      for (let c=0;c<numCh;c++) {
+        view.setFloat32(offset, audioBuffer.getChannelData(c)[i], true);
+        offset += 4;
+      }
+    }
+  } else {
+    for (let i=0;i<numSamples;i++) {
+      for (let c=0;c<numCh;c++) {
+        let s = audioBuffer.getChannelData(c)[i];
+        s = Math.max(-1, Math.min(1, s));
+        view.setInt16(offset, Math.round(s * 32767), true);
+        offset += 2;
+      }
+    }
+  }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+function encodeMp3(audioBuffer, kbps) {
+  if (!lameReady) throw new Error('MP3 编码库未加载，请使用 WAV 格式');
+  const numCh = audioBuffer.numberOfChannels;
+  const sr = audioBuffer.sampleRate;
+  const encoder = new Mp3Encoder(numCh, sr, kbps);
+  const BLOCK = 1152;
+  const chunks = [];
+
+  const ch0 = audioBuffer.getChannelData(0);
+  const ch1 = numCh > 1 ? audioBuffer.getChannelData(1) : ch0;
+
+  // Convert Float32 to Int16
+  const toInt16 = (f32) => {
+    const i16 = new Int16Array(f32.length);
+    for (let i=0;i<f32.length;i++) i16[i] = Math.max(-32768, Math.min(32767, Math.round(f32[i]*32767)));
+    return i16;
+  };
+  const i16ch0 = toInt16(ch0);
+  const i16ch1 = numCh > 1 ? toInt16(ch1) : i16ch0;
+
+  for (let i=0; i<i16ch0.length; i+=BLOCK) {
+    const l = i16ch0.subarray(i, i+BLOCK);
+    const r = i16ch1.subarray(i, i+BLOCK);
+    const d = numCh > 1 ? encoder.encodeBuffer(l, r) : encoder.encodeBuffer(l);
+    if (d.length > 0) chunks.push(new Uint8Array(d));
+  }
+  const flush = encoder.flush();
+  if (flush.length > 0) chunks.push(new Uint8Array(flush));
+
+  return new Blob(chunks, { type: 'audio/mp3' });
+}
+
+// ─── Get output format/bitrate ─────────────────────────────────────────────
+function getOutFormat(tab) {
+  if (tab === 'convert') return val('fmt');
+  if (tab === 'compress') return 'mp3';
+  if (tab === 'enhance') return val('efmt');
+  if (tab === 'split') return val('sfmt');
+  return 'mp3';
+}
+function getMp3Kbps(tab) {
+  if (tab === 'convert') return parseInt(val('br'));
+  if (tab === 'compress') {
+    const m = val('cmode');
+    if (m==='voice') return 32;
+    if (m==='podcast') return 64;
+    if (m==='hq') return 256;
+    if (m==='custom') return parseInt(val('cbr'));
+    return 128;
+  }
+  return 128;
+}
+
+function setProgress(pct, lbl) {
+  document.getElementById('pb').style.width = pct + '%';
+  document.getElementById('pb-lbl').textContent = lbl;
+}
+
+// ─── Main convert ──────────────────────────────────────────────────────────
+document.getElementById('go-btn').onclick = async () => {
+  if (!files.length) return;
+  const tab = document.querySelector('.tab-btn.active').dataset.tab;
+  const btn = document.getElementById('go-btn');
+  const results = document.getElementById('results');
+
+  btn.disabled = true;
+  document.getElementById('prog-wrap').style.display = 'block';
+  results.innerHTML = '';
+
+  // Handle split-into-segments separately
+  const segSec = parseInt(val('sseg')||'0');
+
+  for (let fi = 0; fi < files.length; fi++) {
+    const file = files[fi];
+    document.getElementById('status').textContent = `解码 ${fi+1}/${files.length}: ${file.name}`;
+    setProgress(Math.round(fi/files.length*100), `解码 ${file.name}...`);
+
+    let srcBuf;
+    try {
+      srcBuf = await decodeFile(file);
+    } catch(e) {
+      addErrCard(file.name, '解码失败: ' + e.message);
+      continue;
+    }
+
+    const baseName = file.name.replace(/\.[^.]+$/,'');
+    const outFmt = getOutFormat(tab);
+    const kbps = getMp3Kbps(tab);
+
+    // Build list of segments to process
+    let segments = [{ start: 0, end: srcBuf.duration, suffix: '' }];
+    if (tab === 'split' && segSec > 0) {
+      const ts = parseFloat(val('tstart'))||0;
+      const te = parseFloat(val('tend'))||0;
+      const rangeEnd = te > 0 ? Math.min(te, srcBuf.duration) : srcBuf.duration;
+      segments = [];
+      let t = ts, idx = 1;
+      while (t < rangeEnd) {
+        segments.push({ start: t, end: Math.min(t + segSec, rangeEnd), suffix: `_part${idx}` });
+        t += segSec; idx++;
+      }
+    }
+
+    for (let si = 0; si < segments.length; si++) {
+      const seg = segments[si];
+      setProgress(
+        Math.round((fi + (si+1)/segments.length) / files.length * 100),
+        `处理 ${file.name}${seg.suffix} (${si+1}/${segments.length})...`
+      );
+
+      // Temporarily set trim values for this segment
+      const origStart = document.getElementById('tstart').value;
+      const origEnd = document.getElementById('tend').value;
+      if (segments.length > 1) {
+        document.getElementById('tstart').value = seg.start;
+        document.getElementById('tend').value = seg.end;
+      }
+
+      let outBuf;
+      try {
+        outBuf = await processBuffer(srcBuf, tab);
+      } catch(e) {
+        addErrCard(file.name + seg.suffix, '处理失败: ' + e.message);
+        document.getElementById('tstart').value = origStart;
+        document.getElementById('tend').value = origEnd;
+        continue;
+      }
+      document.getElementById('tstart').value = origStart;
+      document.getElementById('tend').value = origEnd;
+
+      let blob;
+      try {
+        if (outFmt === 'mp3') blob = encodeMp3(outBuf, kbps);
+        else if (outFmt === 'wav32') blob = encodeWAV(outBuf, true);
+        else blob = encodeWAV(outBuf, false);
+      } catch(e) {
+        // Fallback to WAV if MP3 fails
+        try { blob = encodeWAV(outBuf, false); }
+        catch(e2) { addErrCard(file.name + seg.suffix, '编码失败: ' + e.message); continue; }
+      }
+
+      const outExt = outFmt === 'mp3' ? 'mp3' : 'wav';
+      const outName = baseName + seg.suffix + '.' + outExt;
+      const url = URL.createObjectURL(blob);
+      const saved = ((1 - blob.size/file.size) * 100).toFixed(1);
+      const dur = outBuf.duration;
+      const dm = Math.floor(dur/60), ds = String(Math.floor(dur%60)).padStart(2,'0');
+      addResultCard(outName, blob.size, file.size, saved, `时长 ${dm}:${ds} · ${outBuf.sampleRate} Hz · ${outBuf.numberOfChannels}ch`, url);
+    }
+  }
+
+  btn.disabled = false;
+  setProgress(100, '全部完成！点击下载按钮保存文件');
+  document.getElementById('status').textContent = '完成 ✓';
+};
+
+function addResultCard(name, size, origSize, saved, meta, url) {
+  const ext2 = name.split('.').pop();
+  const saveHtml = parseFloat(saved) > 2
+    ? `<span class="rc-save">↓ 减少 ${saved}%</span>`
+    : parseFloat(saved) < -2
+      ? `<span class="rc-grow">↑ 增大 ${Math.abs(saved)}%</span>`
+      : '';
+  const div = document.createElement('div');
+  div.className = 'rc';
+  div.innerHTML = `
+    <div class="rc-icon">✓</div>
+    <div class="rc-info">
+      <div class="rc-name">${name}</div>
+      <div class="rc-meta">${fmtSize(size)} ${saveHtml} &nbsp;·&nbsp; ${meta}</div>
+    </div>
+    <a class="dl-btn" href="${url}" download="${name}">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      下载 .${ext2}
+    </a>`;
+  document.getElementById('results').appendChild(div);
+}
+function addErrCard(name, msg) {
+  const div = document.createElement('div');
+  div.className = 'err-card';
+  div.innerHTML = `<span>✗</span><div><strong>${name}</strong><br><span style="font-size:12px;opacity:0.8">${msg}</span></div>`;
+  document.getElementById('results').appendChild(div);
+}
+
+// ─── Boot ──────────────────────────────────────────────────────────────────
+initLame();
+</script>
+</body>
+</html>
