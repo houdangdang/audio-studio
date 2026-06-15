@@ -308,22 +308,25 @@ header{display:flex;align-items:center;gap:14px;margin-bottom:2.5rem}
 
 <!-- 混音与插入 -->
 <div class="panel" id="tab-mix">
-  <div class="info-box"><strong>混音与插入</strong> — 第一个文件作为主音频，后续文件作为素材。混音会同时叠加播放；插入会在指定秒数把素材拼接进主音频，主音频时长会延长。</div>
+  <div class="info-box"><strong>混音与插入</strong> — 可明确选择主音频、背景音频或插入音频。混音时背景音频会自动循环铺满主音频，过长则自动截断到主音频时长。</div>
   <div class="og">
     <div class="field">
       <label>处理方式</label>
       <select id="mix-mode">
-        <option value="mix">音乐混合（多轨叠加）</option>
+        <option value="mix">音乐混合（主音频 + 背景音频）</option>
         <option value="insert">指定位置插入音频</option>
       </select>
     </div>
-    <div class="field"><label>插入位置（秒）</label><input type="number" id="insert-at" value="0" min="0" step="0.1"></div>
+    <div class="field"><label>主音频</label><select id="mix-main"></select></div>
+    <div class="field" id="mix-bg-field"><label>背景音频（混音用）</label><select id="mix-bg"></select></div>
+    <div class="field" id="insert-file-field"><label>插入音频（插入用）</label><select id="insert-file"></select></div>
+    <div class="field" id="insert-at-field"><label>插入位置（秒）</label><input type="number" id="insert-at" value="0" min="0" step="0.1"></div>
     <div class="field">
       <label>主音频音量</label>
       <div class="rw"><input type="range" id="main-gain" min="0" max="200" value="100" step="5"><span class="rv" id="main-gain-val">100%</span></div>
     </div>
     <div class="field">
-      <label>素材音量</label>
+      <label>背景/插入音量</label>
       <div class="rw"><input type="range" id="extra-gain" min="0" max="200" value="100" step="5"><span class="rv" id="extra-gain-val">100%</span></div>
     </div>
     <div class="field"><label>输出格式</label><select id="mfmt"><option value="mp3">MP3</option><option value="wav">WAV</option><option value="wav32">WAV 32-bit Float</option></select></div>
@@ -453,6 +456,27 @@ function renderFiles() {
       <button class="file-rm" onclick="files.splice(${i},1);renderFiles();if(!files.length){document.getElementById('main-tabs').style.display='none';document.getElementById('action-bar').style.display='none';document.getElementById('wave-wrap').style.display='none';}">✕</button>
     </div>`;
   });
+  updateMixFileOptions();
+}
+
+function updateMixFileOptions() {
+  const selects = ['mix-main', 'mix-bg', 'insert-file'].map(id => document.getElementById(id)).filter(Boolean);
+  selects.forEach((select, selectIndex) => {
+    const current = select.value;
+    select.innerHTML = files.map((file, index) => `<option value="${index}">${index + 1}. ${file.name}</option>`).join('');
+    const fallback = Math.min(selectIndex === 0 ? 0 : 1, Math.max(files.length - 1, 0));
+    select.value = files[current] ? current : String(fallback);
+  });
+  updateMixModeFields();
+}
+
+function updateMixModeFields() {
+  const modeEl = document.getElementById('mix-mode');
+  if (!modeEl) return;
+  const isInsert = modeEl.value === 'insert';
+  document.getElementById('mix-bg-field').style.display = isInsert ? 'none' : 'flex';
+  document.getElementById('insert-file-field').style.display = isInsert ? 'flex' : 'none';
+  document.getElementById('insert-at-field').style.display = isInsert ? 'flex' : 'none';
 }
 
 // ─── Waveform & preview ────────────────────────────────────────────────────
@@ -551,6 +575,8 @@ ranges.forEach(([id,fn]) => {
   const out = document.getElementById(id+'-val');
   if (el && out) el.oninput = () => { out.textContent = fn(el.value); };
 });
+document.getElementById('mix-mode').onchange = updateMixModeFields;
+updateMixModeFields();
 
 // ─── Audio processing pipeline ─────────────────────────────────────────────
 function getV(id) { return document.getElementById(id); }
@@ -722,40 +748,40 @@ function normalizePeaks(buffer) {
   return buffer;
 }
 
-async function processMixBuffers(buffers) {
-  if (buffers.length < 2) throw new Error('请至少选择 2 个音频文件：第一个为主音频，其余为素材');
+async function processMixBuffers(mainBuf, extraBuf) {
+  if (!mainBuf || !extraBuf) throw new Error('请选择主音频和要混合/插入的音频');
 
   const mode = val('mix-mode');
-  const mainBuf = buffers[0];
-  const extraBufs = buffers.slice(1);
   const targetSR = mainBuf.sampleRate;
-  const targetCh = getMixTargetChannels(buffers);
+  const targetCh = getMixTargetChannels([mainBuf, extraBuf]);
   const mainGain = parseFloat(val('main-gain')) / 100;
   const extraGain = parseFloat(val('extra-gain')) / 100;
   const shouldNormalize = tog('tg-mix-norm');
 
-  let outDur;
   if (mode === 'insert') {
     const insertAt = Math.max(0, Math.min(parseFloat(val('insert-at')) || 0, mainBuf.duration));
-    const insertDur = extraBufs.reduce((sum, buf) => sum + buf.duration, 0);
-    outDur = mainBuf.duration + insertDur;
+    const outDur = mainBuf.duration + extraBuf.duration;
     const offline = new OfflineAudioContext(targetCh, Math.ceil(outDur * targetSR), targetSR);
 
     if (insertAt > 0) connectBufferSource(offline, mainBuf, mainGain, 0, 0, insertAt);
-    let cursor = insertAt;
-    extraBufs.forEach(buf => {
-      connectBufferSource(offline, buf, extraGain, cursor, 0, buf.duration);
-      cursor += buf.duration;
-    });
-    if (insertAt < mainBuf.duration) connectBufferSource(offline, mainBuf, mainGain, cursor, insertAt, mainBuf.duration - insertAt);
+    connectBufferSource(offline, extraBuf, extraGain, insertAt, 0, extraBuf.duration);
+    if (insertAt < mainBuf.duration) connectBufferSource(offline, mainBuf, mainGain, insertAt + extraBuf.duration, insertAt, mainBuf.duration - insertAt);
 
     const rendered = await offline.startRendering();
     return shouldNormalize ? normalizePeaks(rendered) : rendered;
   }
 
-  outDur = Math.max(...buffers.map(buf => buf.duration));
+  const outDur = mainBuf.duration;
   const offline = new OfflineAudioContext(targetCh, Math.ceil(outDur * targetSR), targetSR);
-  buffers.forEach((buf, index) => connectBufferSource(offline, buf, index === 0 ? mainGain : extraGain, 0, 0, buf.duration));
+  connectBufferSource(offline, mainBuf, mainGain, 0, 0, mainBuf.duration);
+
+  let cursor = 0;
+  while (cursor < outDur) {
+    const chunkDur = Math.min(extraBuf.duration, outDur - cursor);
+    connectBufferSource(offline, extraBuf, extraGain, cursor, 0, chunkDur);
+    cursor += chunkDur;
+  }
+
   const rendered = await offline.startRendering();
   return shouldNormalize ? normalizePeaks(rendered) : rendered;
 }
@@ -877,19 +903,21 @@ document.getElementById('go-btn').onclick = async () => {
   if (tab === 'mix') {
     try {
       if (files.length < 2) throw new Error('混音或插入需要至少 2 个音频文件');
-      document.getElementById('status').textContent = '解码混音素材...';
-      setProgress(10, '正在解码所有音频文件...');
-      const buffers = [];
-      for (let i = 0; i < files.length; i++) {
-        setProgress(10 + Math.round((i / files.length) * 45), `解码 ${i+1}/${files.length}: ${files[i].name}`);
-        buffers.push(await decodeFile(files[i]));
-      }
-
       const mode = val('mix-mode');
+      const mainIndex = parseInt(val('mix-main'));
+      const extraIndex = parseInt(val(mode === 'insert' ? 'insert-file' : 'mix-bg'));
+      if (mainIndex === extraIndex) throw new Error('主音频和背景/插入音频不能选择同一个文件');
+
+      document.getElementById('status').textContent = '解码所选音频...';
+      setProgress(15, `解码主音频: ${files[mainIndex].name}`);
+      const mainBuf = await decodeFile(files[mainIndex]);
+      setProgress(45, `解码${mode === 'insert' ? '插入' : '背景'}音频: ${files[extraIndex].name}`);
+      const extraBuf = await decodeFile(files[extraIndex]);
+
       const outFmt = getOutFormat(tab);
       const kbps = getMp3Kbps(tab);
-      setProgress(65, mode === 'insert' ? '正在插入音频...' : '正在混合音频...');
-      const outBuf = await processMixBuffers(buffers);
+      setProgress(65, mode === 'insert' ? '正在插入音频...' : '正在循环铺满并混合背景音频...');
+      const outBuf = await processMixBuffers(mainBuf, extraBuf);
 
       let blob;
       setProgress(88, '正在编码导出文件...');
@@ -898,14 +926,15 @@ document.getElementById('go-btn').onclick = async () => {
       else blob = encodeWAV(outBuf, false);
 
       const outExt = outFmt === 'mp3' ? 'mp3' : 'wav';
-      const baseName = files[0].name.replace(/\.[^.]+$/,'');
+      const baseName = files[mainIndex].name.replace(/\.[^.]+$/,'');
       const outName = `${baseName}_${mode === 'insert' ? 'inserted' : 'mixed'}.${outExt}`;
       const url = URL.createObjectURL(blob);
-      const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+      const totalSize = files[mainIndex].size + files[extraIndex].size;
       const saved = ((1 - blob.size/totalSize) * 100).toFixed(1);
       const dur = outBuf.duration;
       const dm = Math.floor(dur/60), ds = String(Math.floor(dur%60)).padStart(2,'0');
-      addResultCard(outName, blob.size, totalSize, saved, `时长 ${dm}:${ds} · ${outBuf.sampleRate} Hz · ${outBuf.numberOfChannels}ch · ${files.length} 个源文件`, url);
+      const modeMeta = mode === 'insert' ? `插入 ${files[extraIndex].name}` : `背景 ${files[extraIndex].name} · 自动铺满/截断`;
+      addResultCard(outName, blob.size, totalSize, saved, `时长 ${dm}:${ds} · ${outBuf.sampleRate} Hz · ${outBuf.numberOfChannels}ch · ${modeMeta}`, url);
       setProgress(100, '混音处理完成！点击下载按钮保存文件');
       document.getElementById('status').textContent = '完成 ✓';
     } catch(e) {
