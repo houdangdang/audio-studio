@@ -168,6 +168,7 @@ header{display:flex;align-items:center;gap:14px;margin-bottom:2.5rem}
   <button class="tab-btn" data-tab="compress">📦 压缩优化</button>
   <button class="tab-btn" data-tab="enhance">✨ 音频处理</button>
   <button class="tab-btn" data-tab="split">✂️ 裁剪分割</button>
+  <button class="tab-btn" data-tab="mix">🎚️ 混音插入</button>
 </div>
 
 <!-- 格式转换 -->
@@ -302,6 +303,43 @@ header{display:flex;align-items:center;gap:14px;margin-bottom:2.5rem}
       </select>
     </div>
     <div class="field"><label>输出格式</label><select id="sfmt"><option value="mp3">MP3</option><option value="wav">WAV</option></select></div>
+  </div>
+</div>
+
+<!-- 混音与插入 -->
+<div class="panel" id="tab-mix">
+  <div class="info-box"><strong>混音与插入</strong> — 第一个文件作为主音频，后续文件作为素材。混音会同时叠加播放；插入会在指定秒数把素材拼接进主音频，主音频时长会延长。</div>
+  <div class="og">
+    <div class="field">
+      <label>处理方式</label>
+      <select id="mix-mode">
+        <option value="mix">音乐混合（多轨叠加）</option>
+        <option value="insert">指定位置插入音频</option>
+      </select>
+    </div>
+    <div class="field"><label>插入位置（秒）</label><input type="number" id="insert-at" value="0" min="0" step="0.1"></div>
+    <div class="field">
+      <label>主音频音量</label>
+      <div class="rw"><input type="range" id="main-gain" min="0" max="200" value="100" step="5"><span class="rv" id="main-gain-val">100%</span></div>
+    </div>
+    <div class="field">
+      <label>素材音量</label>
+      <div class="rw"><input type="range" id="extra-gain" min="0" max="200" value="100" step="5"><span class="rv" id="extra-gain-val">100%</span></div>
+    </div>
+    <div class="field"><label>输出格式</label><select id="mfmt"><option value="mp3">MP3</option><option value="wav">WAV</option><option value="wav32">WAV 32-bit Float</option></select></div>
+    <div class="field">
+      <label>MP3 比特率</label>
+      <select id="mbr">
+        <option value="96">96 kbps</option>
+        <option value="128" selected>128 kbps</option>
+        <option value="192">192 kbps</option>
+        <option value="256">256 kbps</option>
+        <option value="320">320 kbps</option>
+      </select>
+    </div>
+  </div>
+  <div style="margin-top:0.8rem">
+    <div class="tr"><div class="tr-l"><span>自动防爆音</span><small>渲染后自动降低峰值，避免多轨叠加削波失真</small></div><div class="tg on" id="tg-mix-norm" onclick="this.classList.toggle('on')"></div></div>
   </div>
 </div>
 
@@ -505,6 +543,8 @@ const ranges = [
   ['treble', v => (v>0?'+':'')+v+' dB'],
   ['mid', v => (v>0?'+':'')+v+' dB'],
   ['cbr', v => v+' kbps'],
+  ['main-gain', v => v+'%'],
+  ['extra-gain', v => v+'%'],
 ];
 ranges.forEach(([id,fn]) => {
   const el = document.getElementById(id);
@@ -653,6 +693,73 @@ async function processBuffer(srcBuf, tab) {
   return offline.startRendering();
 }
 
+function getMixTargetChannels(buffers) {
+  return Math.min(2, Math.max(...buffers.map(buf => buf.numberOfChannels)));
+}
+
+function connectBufferSource(offline, buffer, gainValue, when, offset, duration) {
+  const src = offline.createBufferSource();
+  const gain = offline.createGain();
+  src.buffer = buffer;
+  gain.gain.value = gainValue;
+  src.connect(gain);
+  gain.connect(offline.destination);
+  src.start(when, offset, Math.max(0.001, duration));
+}
+
+function normalizePeaks(buffer) {
+  let peak = 0;
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const data = buffer.getChannelData(c);
+    for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]));
+  }
+  if (peak <= 1) return buffer;
+  const scale = 0.98 / peak;
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const data = buffer.getChannelData(c);
+    for (let i = 0; i < data.length; i++) data[i] *= scale;
+  }
+  return buffer;
+}
+
+async function processMixBuffers(buffers) {
+  if (buffers.length < 2) throw new Error('请至少选择 2 个音频文件：第一个为主音频，其余为素材');
+
+  const mode = val('mix-mode');
+  const mainBuf = buffers[0];
+  const extraBufs = buffers.slice(1);
+  const targetSR = mainBuf.sampleRate;
+  const targetCh = getMixTargetChannels(buffers);
+  const mainGain = parseFloat(val('main-gain')) / 100;
+  const extraGain = parseFloat(val('extra-gain')) / 100;
+  const shouldNormalize = tog('tg-mix-norm');
+
+  let outDur;
+  if (mode === 'insert') {
+    const insertAt = Math.max(0, Math.min(parseFloat(val('insert-at')) || 0, mainBuf.duration));
+    const insertDur = extraBufs.reduce((sum, buf) => sum + buf.duration, 0);
+    outDur = mainBuf.duration + insertDur;
+    const offline = new OfflineAudioContext(targetCh, Math.ceil(outDur * targetSR), targetSR);
+
+    if (insertAt > 0) connectBufferSource(offline, mainBuf, mainGain, 0, 0, insertAt);
+    let cursor = insertAt;
+    extraBufs.forEach(buf => {
+      connectBufferSource(offline, buf, extraGain, cursor, 0, buf.duration);
+      cursor += buf.duration;
+    });
+    if (insertAt < mainBuf.duration) connectBufferSource(offline, mainBuf, mainGain, cursor, insertAt, mainBuf.duration - insertAt);
+
+    const rendered = await offline.startRendering();
+    return shouldNormalize ? normalizePeaks(rendered) : rendered;
+  }
+
+  outDur = Math.max(...buffers.map(buf => buf.duration));
+  const offline = new OfflineAudioContext(targetCh, Math.ceil(outDur * targetSR), targetSR);
+  buffers.forEach((buf, index) => connectBufferSource(offline, buf, index === 0 ? mainGain : extraGain, 0, 0, buf.duration));
+  const rendered = await offline.startRendering();
+  return shouldNormalize ? normalizePeaks(rendered) : rendered;
+}
+
 // ─── Encoders ─────────────────────────────────────────────────────────────
 function encodeWAV(audioBuffer, is32bit) {
   const numCh = audioBuffer.numberOfChannels;
@@ -734,10 +841,12 @@ function getOutFormat(tab) {
   if (tab === 'compress') return 'mp3';
   if (tab === 'enhance') return val('efmt');
   if (tab === 'split') return val('sfmt');
+  if (tab === 'mix') return val('mfmt');
   return 'mp3';
 }
 function getMp3Kbps(tab) {
   if (tab === 'convert') return parseInt(val('br'));
+  if (tab === 'mix') return parseInt(val('mbr'));
   if (tab === 'compress') {
     const m = val('cmode');
     if (m==='voice') return 32;
@@ -764,6 +873,49 @@ document.getElementById('go-btn').onclick = async () => {
   btn.disabled = true;
   document.getElementById('prog-wrap').style.display = 'block';
   results.innerHTML = '';
+
+  if (tab === 'mix') {
+    try {
+      if (files.length < 2) throw new Error('混音或插入需要至少 2 个音频文件');
+      document.getElementById('status').textContent = '解码混音素材...';
+      setProgress(10, '正在解码所有音频文件...');
+      const buffers = [];
+      for (let i = 0; i < files.length; i++) {
+        setProgress(10 + Math.round((i / files.length) * 45), `解码 ${i+1}/${files.length}: ${files[i].name}`);
+        buffers.push(await decodeFile(files[i]));
+      }
+
+      const mode = val('mix-mode');
+      const outFmt = getOutFormat(tab);
+      const kbps = getMp3Kbps(tab);
+      setProgress(65, mode === 'insert' ? '正在插入音频...' : '正在混合音频...');
+      const outBuf = await processMixBuffers(buffers);
+
+      let blob;
+      setProgress(88, '正在编码导出文件...');
+      if (outFmt === 'mp3') blob = encodeMp3(outBuf, kbps);
+      else if (outFmt === 'wav32') blob = encodeWAV(outBuf, true);
+      else blob = encodeWAV(outBuf, false);
+
+      const outExt = outFmt === 'mp3' ? 'mp3' : 'wav';
+      const baseName = files[0].name.replace(/\.[^.]+$/,'');
+      const outName = `${baseName}_${mode === 'insert' ? 'inserted' : 'mixed'}.${outExt}`;
+      const url = URL.createObjectURL(blob);
+      const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+      const saved = ((1 - blob.size/totalSize) * 100).toFixed(1);
+      const dur = outBuf.duration;
+      const dm = Math.floor(dur/60), ds = String(Math.floor(dur%60)).padStart(2,'0');
+      addResultCard(outName, blob.size, totalSize, saved, `时长 ${dm}:${ds} · ${outBuf.sampleRate} Hz · ${outBuf.numberOfChannels}ch · ${files.length} 个源文件`, url);
+      setProgress(100, '混音处理完成！点击下载按钮保存文件');
+      document.getElementById('status').textContent = '完成 ✓';
+    } catch(e) {
+      addErrCard('混音插入', e.message);
+      setProgress(100, '处理失败');
+      document.getElementById('status').textContent = '失败';
+    }
+    btn.disabled = false;
+    return;
+  }
 
   // Handle split-into-segments separately
   const segSec = parseInt(val('sseg')||'0');
