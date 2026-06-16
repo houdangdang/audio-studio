@@ -44,7 +44,8 @@ header{display:flex;align-items:center;gap:14px;margin-bottom:2.5rem}
 
 /* File list */
 #file-list{margin-top:1rem;display:flex;flex-direction:column;gap:8px}
-.file-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:0.85rem 1.1rem;display:flex;align-items:center;gap:10px}
+.file-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:0.85rem 1.1rem;display:flex;flex-direction:column;gap:10px}
+.file-row{display:flex;align-items:center;gap:10px;width:100%}
 .file-ext{width:32px;height:32px;background:var(--bg3);border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9px;color:var(--accent2);font-weight:700;flex-shrink:0}
 .file-info{flex:1;min-width:0}
 .file-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -57,9 +58,13 @@ header{display:flex;align-items:center;gap:14px;margin-bottom:2.5rem}
 #wave-canvas{width:100%;height:68px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;display:block;cursor:pointer}
 #wave-meta{font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:4px}
 #wave-player{margin-top:8px;display:none;align-items:center;gap:10px}
-#play-btn{background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-size:13px;padding:6px 14px;border-radius:8px;cursor:pointer;transition:all 0.15s}
-#play-btn:hover{border-color:var(--accent);color:var(--accent)}
-#play-time{font-family:var(--mono);font-size:12px;color:var(--muted)}
+#play-btn,.mini-play{background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-size:13px;padding:6px 14px;border-radius:8px;cursor:pointer;transition:all 0.15s;font-family:var(--sans)}
+#play-btn:hover,.mini-play:hover{border-color:var(--accent);color:var(--accent)}
+#play-time,.mini-time{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.mini-wave{width:100%;display:flex;flex-direction:column;gap:7px}
+.mini-canvas{width:100%;height:54px;background:rgba(255,255,255,0.025);border:1px solid var(--border);border-radius:9px;display:block;cursor:pointer}
+.mini-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mini-status{font-family:var(--mono);font-size:11px;color:var(--muted)}
 
 /* Tabs */
 .tab-bar{display:flex;gap:2px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:3px;margin:1.8rem 0 1.4rem}
@@ -104,7 +109,7 @@ header{display:flex;align-items:center;gap:14px;margin-bottom:2.5rem}
 .pb-lbl{font-size:11px;color:var(--muted);margin-top:5px;font-family:var(--mono)}
 
 #results{margin-top:1.5rem}
-.rc{background:var(--bg2);border:1px solid rgba(78,203,140,0.3);border-radius:12px;padding:0.9rem 1.1rem;display:flex;align-items:center;gap:10px;margin-bottom:8px;animation:si 0.25s ease}
+.rc{background:var(--bg2);border:1px solid rgba(78,203,140,0.3);border-radius:12px;padding:0.9rem 1.1rem;display:flex;align-items:center;gap:10px;margin-bottom:8px;animation:si 0.25s ease;flex-wrap:wrap}
 @keyframes si{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
 .rc-icon{width:32px;height:32px;background:rgba(78,203,140,0.1);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
 .rc-info{flex:1;min-width:0}
@@ -372,6 +377,15 @@ let previewBuffer = null;
 let previewPlaying = false;
 let previewStart = 0;
 let previewOffset = 0;
+let miniPreviewSource = null;
+let miniPreviewId = null;
+let miniPreviewBuffer = null;
+let miniPreviewStart = 0;
+let miniPreviewOffset = 0;
+let miniPreviewRAF = 0;
+const fileBufferCache = new Map();
+const miniWaveBuffers = new Map();
+const miniWaveOffsets = new Map();
 
 // ─── Load lamejs ──────────────────────────────────────────────────────────
 function loadScript(url) {
@@ -451,12 +465,27 @@ function renderFiles() {
   el.innerHTML = '';
   files.forEach((f,i) => {
     el.innerHTML += `<div class="file-card">
-      <div class="file-ext">${getExt(f.name)}</div>
-      <div class="file-info"><div class="file-name">${f.name}</div><div class="file-meta">${fmtSize(f.size)}</div></div>
-      <button class="file-rm" onclick="files.splice(${i},1);renderFiles();if(!files.length){document.getElementById('main-tabs').style.display='none';document.getElementById('action-bar').style.display='none';document.getElementById('wave-wrap').style.display='none';}">✕</button>
+      <div class="file-row">
+        <div class="file-ext">${getExt(f.name)}</div>
+        <div class="file-info"><div class="file-name">${f.name}</div><div class="file-meta">${fmtSize(f.size)}</div></div>
+        <button class="file-rm" onclick="removeFile(${i})">✕</button>
+      </div>
+      <div class="mini-wave" id="file-wave-${i}"><span class="mini-status">正在生成音波...</span></div>
     </div>`;
   });
   updateMixFileOptions();
+  renderUploadedWaveforms();
+}
+
+function removeFile(index) {
+  files.splice(index, 1);
+  stopMiniPreview();
+  renderFiles();
+  if (!files.length) {
+    document.getElementById('main-tabs').style.display = 'none';
+    document.getElementById('action-bar').style.display = 'none';
+    document.getElementById('wave-wrap').style.display = 'none';
+  }
 }
 
 function updateMixFileOptions() {
@@ -477,6 +506,136 @@ function updateMixModeFields() {
   document.getElementById('mix-bg-field').style.display = isInsert ? 'none' : 'flex';
   document.getElementById('insert-file-field').style.display = isInsert ? 'flex' : 'none';
   document.getElementById('insert-at-field').style.display = isInsert ? 'flex' : 'none';
+}
+
+async function getFilePreviewBuffer(file) {
+  const key = `${file.name}_${file.size}_${file.lastModified}`;
+  if (fileBufferCache.has(key)) return fileBufferCache.get(key);
+  const buffer = await decodeFile(file);
+  fileBufferCache.set(key, buffer);
+  return buffer;
+}
+
+async function renderUploadedWaveforms() {
+  files.forEach(async (file, index) => {
+    const id = `file-wave-${index}`;
+    const el = document.getElementById(id);
+    if (!el) return;
+    try {
+      const buffer = await getFilePreviewBuffer(file);
+      if (files[index] !== file) return;
+      renderMiniWaveform(id, buffer, `上传音频 · ${buffer.sampleRate} Hz · ${buffer.numberOfChannels}ch`);
+    } catch(e) {
+      el.innerHTML = `<span class="mini-status">无法生成音波：${e.message}</span>`;
+    }
+  });
+}
+
+function fmtTime(t) {
+  return `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
+}
+
+function renderMiniWaveform(id, buffer, meta) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  miniWaveBuffers.set(id, buffer);
+  if (!miniWaveOffsets.has(id)) miniWaveOffsets.set(id, 0);
+  el.innerHTML = `
+    <canvas class="mini-canvas" id="${id}-canvas"></canvas>
+    <div class="mini-controls">
+      <button class="mini-play" id="${id}-btn" onclick="toggleMiniPreview('${id}')">▶ 试听</button>
+      <span class="mini-time" id="${id}-time">0:00 / ${fmtTime(buffer.duration)}</span>
+      <span class="mini-status" id="${id}-pos">点击位置：${fmtTime(miniWaveOffsets.get(id))}</span>
+      <span class="mini-status">${meta}</span>
+    </div>`;
+
+  const canvas = document.getElementById(`${id}-canvas`);
+  const ctx = canvas.getContext('2d');
+  const W = canvas.offsetWidth || el.clientWidth || 600;
+  const H = 54;
+  canvas.width = W * devicePixelRatio;
+  canvas.height = H * devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  ctx.clearRect(0,0,W,H);
+
+  const data = buffer.getChannelData(0);
+  const step = Math.max(1, Math.ceil(data.length / W));
+  for (let x = 0; x < W; x++) {
+    let mx = 0;
+    for (let j = 0; j < step; j++) {
+      const v = Math.abs(data[x * step + j] || 0);
+      if (v > mx) mx = v;
+    }
+    const bh = Math.max(1, mx * H * 0.78);
+    const g = ctx.createLinearGradient(0, H/2-bh, 0, H/2+bh);
+    g.addColorStop(0, 'rgba(123,110,246,0.9)');
+    g.addColorStop(1, 'rgba(92,224,196,0.45)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x, H/2-bh, 1, bh*2);
+  }
+
+  canvas.onclick = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const offset = ratio * buffer.duration;
+    miniWaveOffsets.set(id, offset);
+    document.getElementById(`${id}-pos`).textContent = `点击位置：${fmtTime(offset)}（${offset.toFixed(2)} 秒）`;
+    document.getElementById(`${id}-time`).textContent = `${fmtTime(offset)} / ${fmtTime(buffer.duration)}`;
+    if (miniPreviewId === id) startMiniPreview(id, offset);
+  };
+}
+
+function toggleMiniPreview(id) {
+  if (miniPreviewId === id) stopMiniPreview();
+  else startMiniPreview(id, miniWaveOffsets.get(id) || 0);
+}
+
+function startMiniPreview(id, offset) {
+  const buffer = miniWaveBuffers.get(id);
+  if (!buffer) return;
+  stopMiniPreview(true, false);
+  if (!audioCtx) audioCtx = new AudioContext();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  miniPreviewSource = audioCtx.createBufferSource();
+  miniPreviewSource.buffer = buffer;
+  miniPreviewSource.connect(audioCtx.destination);
+  miniPreviewOffset = Math.max(0, Math.min(offset || 0, buffer.duration));
+  miniPreviewSource.start(0, miniPreviewOffset);
+  miniPreviewId = id;
+  miniPreviewBuffer = buffer;
+  miniPreviewStart = audioCtx.currentTime - miniPreviewOffset;
+  const btn = document.getElementById(`${id}-btn`);
+  if (btn) btn.textContent = '⏹ 停止';
+  miniPreviewSource.onended = () => stopMiniPreview(false);
+  updateMiniPlayTime();
+}
+
+function stopMiniPreview(resetOffset = true, allowEnded = true) {
+  if (miniPreviewSource) {
+    if (!allowEnded) miniPreviewSource.onended = null;
+    try { miniPreviewSource.stop(); } catch(e){}
+  }
+  if (miniPreviewRAF) cancelAnimationFrame(miniPreviewRAF);
+  const oldId = miniPreviewId;
+  if (oldId) {
+    const btn = document.getElementById(`${oldId}-btn`);
+    const time = document.getElementById(`${oldId}-time`);
+    const buffer = miniWaveBuffers.get(oldId);
+    if (btn) btn.textContent = '▶ 试听';
+    if (time && buffer) time.textContent = `${fmtTime(resetOffset ? (miniWaveOffsets.get(oldId) || 0) : 0)} / ${fmtTime(buffer.duration)}`;
+  }
+  if (!resetOffset && oldId) miniWaveOffsets.set(oldId, 0);
+  miniPreviewSource = null;
+  miniPreviewId = null;
+  miniPreviewBuffer = null;
+}
+
+function updateMiniPlayTime() {
+  if (!miniPreviewId || !miniPreviewBuffer) return;
+  const cur = Math.min(miniPreviewBuffer.duration, audioCtx.currentTime - miniPreviewStart);
+  const time = document.getElementById(`${miniPreviewId}-time`);
+  if (time) time.textContent = `${fmtTime(cur)} / ${fmtTime(miniPreviewBuffer.duration)}`;
+  miniPreviewRAF = requestAnimationFrame(updateMiniPlayTime);
 }
 
 // ─── Waveform & preview ────────────────────────────────────────────────────
@@ -516,8 +675,11 @@ async function drawWaveform(file) {
     document.getElementById('wave-player').style.display = 'flex';
 
     canvas.onclick = (e) => {
-      const ratio = e.offsetX / W;
+      const rect = canvas.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       previewOffset = ratio * dur;
+      document.getElementById('play-time').textContent = `${fmtTime(previewOffset)} / ${fmtTime(dur)}`;
+      document.getElementById('wave-meta').textContent = `${file.name}  ·  点击位置 ${previewOffset.toFixed(2)} 秒  ·  ${mins}:${secs}  ·  ${previewBuffer.sampleRate} Hz  ·  ${previewBuffer.numberOfChannels}ch`;
       if (previewPlaying) { stopPreview(); startPreview(); }
     };
   } catch(e) {
@@ -550,10 +712,9 @@ function stopPreview() {
 }
 function updatePlayTime() {
   if (!previewPlaying || !previewBuffer) return;
-  const cur = audioCtx.currentTime - previewStart;
+  const cur = Math.max(0, Math.min(previewBuffer.duration, audioCtx.currentTime - previewStart));
   const dur = previewBuffer.duration;
-  const fmt2 = t => `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
-  document.getElementById('play-time').textContent = `${fmt2(cur)} / ${fmt2(dur)}`;
+  document.getElementById('play-time').textContent = `${fmtTime(cur)} / ${fmtTime(dur)}`;
   requestAnimationFrame(updatePlayTime);
 }
 
@@ -934,7 +1095,7 @@ document.getElementById('go-btn').onclick = async () => {
       const dur = outBuf.duration;
       const dm = Math.floor(dur/60), ds = String(Math.floor(dur%60)).padStart(2,'0');
       const modeMeta = mode === 'insert' ? `插入 ${files[extraIndex].name}` : `背景 ${files[extraIndex].name} · 自动铺满/截断`;
-      addResultCard(outName, blob.size, totalSize, saved, `时长 ${dm}:${ds} · ${outBuf.sampleRate} Hz · ${outBuf.numberOfChannels}ch · ${modeMeta}`, url);
+      addResultCard(outName, blob.size, totalSize, saved, `时长 ${dm}:${ds} · ${outBuf.sampleRate} Hz · ${outBuf.numberOfChannels}ch · ${modeMeta}`, url, outBuf);
       setProgress(100, '混音处理完成！点击下载按钮保存文件');
       document.getElementById('status').textContent = '完成 ✓';
     } catch(e) {
@@ -1024,7 +1185,7 @@ document.getElementById('go-btn').onclick = async () => {
       const saved = ((1 - blob.size/file.size) * 100).toFixed(1);
       const dur = outBuf.duration;
       const dm = Math.floor(dur/60), ds = String(Math.floor(dur%60)).padStart(2,'0');
-      addResultCard(outName, blob.size, file.size, saved, `时长 ${dm}:${ds} · ${outBuf.sampleRate} Hz · ${outBuf.numberOfChannels}ch`, url);
+      addResultCard(outName, blob.size, file.size, saved, `时长 ${dm}:${ds} · ${outBuf.sampleRate} Hz · ${outBuf.numberOfChannels}ch`, url, outBuf);
     }
   }
 
@@ -1033,7 +1194,7 @@ document.getElementById('go-btn').onclick = async () => {
   document.getElementById('status').textContent = '完成 ✓';
 };
 
-function addResultCard(name, size, origSize, saved, meta, url) {
+function addResultCard(name, size, origSize, saved, meta, url, audioBuffer) {
   const ext2 = name.split('.').pop();
   const saveHtml = parseFloat(saved) > 2
     ? `<span class="rc-save">↓ 减少 ${saved}%</span>`
@@ -1041,6 +1202,7 @@ function addResultCard(name, size, origSize, saved, meta, url) {
       ? `<span class="rc-grow">↑ 增大 ${Math.abs(saved)}%</span>`
       : '';
   const div = document.createElement('div');
+  const waveId = `result-wave-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   div.className = 'rc';
   div.innerHTML = `
     <div class="rc-icon">✓</div>
@@ -1051,8 +1213,10 @@ function addResultCard(name, size, origSize, saved, meta, url) {
     <a class="dl-btn" href="${url}" download="${name}">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       下载 .${ext2}
-    </a>`;
+    </a>
+    <div class="mini-wave" id="${waveId}"><span class="mini-status">正在生成结果音波...</span></div>`;
   document.getElementById('results').appendChild(div);
+  if (audioBuffer) renderMiniWaveform(waveId, audioBuffer, `生成结果 · ${audioBuffer.sampleRate} Hz · ${audioBuffer.numberOfChannels}ch`);
 }
 function addErrCard(name, msg) {
   const div = document.createElement('div');
