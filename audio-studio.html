@@ -249,8 +249,25 @@ header{display:flex;align-items:center;gap:14px;margin-bottom:2.5rem}
 
 <!-- 音频处理 -->
 <div class="panel" id="tab-enhance">
-  <div class="info-box"><strong>音频处理</strong> — 基于 Web Audio API 在浏览器本地实时运算，支持音量、速度、均衡器、淡入淡出等效果。</div>
+  <div class="info-box"><strong>音质增强与降噪</strong> — 所有处理均在浏览器本地完成。智能降噪会分析音频中的低噪声段并压低持续底噪，适合录音、播客和语音；音乐文件建议使用“轻度”档位。</div>
   <div class="og">
+    <div class="field">
+      <label>智能降噪</label>
+      <select id="denoise">
+        <option value="0">关闭</option>
+        <option value="1" selected>轻度 — 保留更多环境声</option>
+        <option value="2">标准 — 推荐</option>
+        <option value="3">强力 — 语音录音</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>输出质量</label>
+      <select id="quality">
+        <option value="normal">自然 — 保留原始动态</option>
+        <option value="voice">清晰 — 适合人声</option>
+        <option value="clean" selected>通透 — 降噪后增强细节</option>
+      </select>
+    </div>
     <div class="field">
       <label>音量增益</label>
       <div class="rw"><input type="range" id="vol" min="-20" max="20" value="0" step="1"><span class="rv" id="vol-val">0 dB</span></div>
@@ -285,6 +302,7 @@ header{display:flex;align-items:center;gap:14px;margin-bottom:2.5rem}
     </div>
   </div>
   <div style="margin-top:0.8rem">
+    <div class="tr"><div class="tr-l"><span>去除低频嗡声</span><small>抑制 50/60 Hz 电流声及空调轰鸣</small></div><div class="tg on" id="tg-hum" onclick="this.classList.toggle('on')"></div></div>
     <div class="tr"><div class="tr-l"><span>左右声道互换</span><small>交换 L/R 声道</small></div><div class="tg" id="tg-swap" onclick="this.classList.toggle('on')"></div></div>
     <div class="tr"><div class="tr-l"><span>音频倒放</span><small>将音频时间轴完全翻转</small></div><div class="tg" id="tg-rev" onclick="this.classList.toggle('on')"></div></div>
   </div>
@@ -751,6 +769,55 @@ async function decodeFile(file) {
   return audioCtx.decodeAudioData(ab);
 }
 
+// Estimate the quietest part of the signal and apply a smooth downward expander.
+// This keeps speech tails natural while attenuating steady background noise.
+function applyNoiseReduction(buffer, level, context) {
+  if (!level) return buffer;
+
+  const frameSize = 1024;
+  const frameCount = Math.ceil(buffer.length / frameSize);
+  const frameRms = [];
+  for (let frame = 0; frame < frameCount; frame++) {
+    const start = frame * frameSize;
+    const end = Math.min(buffer.length, start + frameSize);
+    let sum = 0;
+    let count = 0;
+    for (let c = 0; c < buffer.numberOfChannels; c++) {
+      const data = buffer.getChannelData(c);
+      for (let i = start; i < end; i++) { sum += data[i] * data[i]; count++; }
+    }
+    frameRms.push(Math.sqrt(sum / Math.max(1, count)));
+  }
+
+  const sorted = frameRms.slice().sort((a, b) => a - b);
+  const quietRms = sorted[Math.floor(Math.max(0, sorted.length - 1) * 0.2)] || 0;
+  const factors = [0, 1.8, 2.5, 3.2];
+  const floorGains = [1, 0.55, 0.28, 0.12];
+  const threshold = Math.max(quietRms * factors[level], 0.0005);
+  const floorGain = floorGains[level];
+  const cleaned = context.createBuffer(buffer.numberOfChannels, buffer.length, buffer.sampleRate);
+  const attack = Math.max(1, Math.round(buffer.sampleRate * 0.004));
+  const release = Math.max(1, Math.round(buffer.sampleRate * 0.06));
+
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const input = buffer.getChannelData(c);
+    const output = cleaned.getChannelData(c);
+    let envelope = 0;
+    let gain = 1;
+    for (let i = 0; i < input.length; i++) {
+      const sample = Math.abs(input[i]);
+      envelope += (sample - envelope) * (sample > envelope ? 1 / attack : 1 / release);
+      const target = envelope >= threshold
+        ? 1
+        : floorGain + (1 - floorGain) * Math.min(1, envelope / threshold);
+      const smoothing = target > gain ? 1 / attack : 1 / release;
+      gain += (target - gain) * smoothing;
+      output[i] = input[i] * gain;
+    }
+  }
+  return cleaned;
+}
+
 // Apply effects using OfflineAudioContext
 async function processBuffer(srcBuf, tab) {
   const origSR = srcBuf.sampleRate;
@@ -762,6 +829,7 @@ async function processBuffer(srcBuf, tab) {
   let targetSR = origSR, targetCh = origCh;
   let speed = 1, volDb = 0, fadeIn = 0, fadeOut = 0;
   let bassGain = 0, trebleGain = 0, midGain = 0;
+  let denoiseLevel = 0, qualityMode = 'normal', removeHum = false;
   let swapLR = false, doReverse = false, normalize = false;
   let trimStart = 0, trimEnd = origDur;
 
@@ -784,6 +852,9 @@ async function processBuffer(srcBuf, tab) {
     bassGain = parseFloat(val('bass'));
     trebleGain = parseFloat(val('treble'));
     midGain = parseFloat(val('mid'));
+    denoiseLevel = parseInt(val('denoise') || '0');
+    qualityMode = val('quality');
+    removeHum = tog('tg-hum');
     swapLR = tog('tg-swap');
     doReverse = tog('tg-rev');
     if (parseInt(val('ch')||'0')) targetCh = parseInt(val('ch'));
@@ -817,11 +888,16 @@ async function processBuffer(srcBuf, tab) {
   }
   if (doReverse) {
     // Copy to new buffer and reverse each channel
-    workBuf = new AudioBuffer({ numberOfChannels: workBuf.numberOfChannels, length: workBuf.length, sampleRate: workBuf.sampleRate });
-    for (let c = 0; c < srcBuf.numberOfChannels; c++) {
-      const d = srcBuf.getChannelData(c).slice().reverse();
-      workBuf.copyToChannel(d, c);
+    const reversed = new AudioBuffer({ numberOfChannels: workBuf.numberOfChannels, length: workBuf.length, sampleRate: workBuf.sampleRate });
+    for (let c = 0; c < workBuf.numberOfChannels; c++) {
+      const d = workBuf.getChannelData(c).slice().reverse();
+      reversed.copyToChannel(d, c);
     }
+    workBuf = reversed;
+  }
+
+  if (tab === 'enhance' && denoiseLevel) {
+    workBuf = applyNoiseReduction(workBuf, denoiseLevel, offline);
   }
 
   src.buffer = workBuf;
@@ -857,6 +933,20 @@ async function processBuffer(srcBuf, tab) {
     gainNode.gain.linearRampToValueAtTime(0.0001, segDur);
   }
 
+  // Remove common electrical hum without removing the whole low end.
+  if (tab === 'enhance' && removeHum) {
+    const highPass = offline.createBiquadFilter();
+    highPass.type = 'highpass'; highPass.frequency.value = 55; highPass.Q.value = 0.707;
+    node.connect(highPass); node = highPass;
+    [50, 60].forEach(freq => {
+      if (freq < targetSR / 2) {
+        const notch = offline.createBiquadFilter();
+        notch.type = 'notch'; notch.frequency.value = freq; notch.Q.value = 18;
+        node.connect(notch); node = notch;
+      }
+    });
+  }
+
   // EQ filters
   if (bassGain !== 0) {
     const f = offline.createBiquadFilter();
@@ -872,6 +962,24 @@ async function processBuffer(srcBuf, tab) {
     const f = offline.createBiquadFilter();
     f.type = 'highshelf'; f.frequency.value = 10000; f.gain.value = trebleGain;
     node.connect(f); node = f;
+  }
+
+  // Voice mode improves intelligibility with gentle dynamics control.
+  if (tab === 'enhance' && qualityMode === 'voice') {
+    const compressor = offline.createDynamicsCompressor();
+    compressor.threshold.value = -26;
+    compressor.knee.value = 18;
+    compressor.ratio.value = 3;
+    compressor.attack.value = 0.004;
+    compressor.release.value = 0.16;
+    node.connect(compressor); node = compressor;
+    const makeup = offline.createGain();
+    makeup.gain.value = 1.35;
+    node.connect(makeup); node = makeup;
+  } else if (tab === 'enhance' && qualityMode === 'clean') {
+    const clarity = offline.createBiquadFilter();
+    clarity.type = 'highshelf'; clarity.frequency.value = 7000; clarity.gain.value = 2;
+    node.connect(clarity); node = clarity;
   }
 
   node.connect(offline.destination);
@@ -1185,7 +1293,10 @@ document.getElementById('go-btn').onclick = async () => {
       const saved = ((1 - blob.size/file.size) * 100).toFixed(1);
       const dur = outBuf.duration;
       const dm = Math.floor(dur/60), ds = String(Math.floor(dur%60)).padStart(2,'0');
-      addResultCard(outName, blob.size, file.size, saved, `时长 ${dm}:${ds} · ${outBuf.sampleRate} Hz · ${outBuf.numberOfChannels}ch`, url, outBuf);
+      const enhancementMeta = tab === 'enhance'
+        ? ` · 降噪 ${val('denoise') === '0' ? '关闭' : ['','轻度','标准','强力'][parseInt(val('denoise'))]} · ${qualityLabel()}${removeHumLabel()}`
+        : '';
+      addResultCard(outName, blob.size, file.size, saved, `时长 ${dm}:${ds} · ${outBuf.sampleRate} Hz · ${outBuf.numberOfChannels}ch${enhancementMeta}`, url, outBuf);
     }
   }
 
@@ -1218,6 +1329,14 @@ function addResultCard(name, size, origSize, saved, meta, url, audioBuffer) {
   document.getElementById('results').appendChild(div);
   if (audioBuffer) renderMiniWaveform(waveId, audioBuffer, `生成结果 · ${audioBuffer.sampleRate} Hz · ${audioBuffer.numberOfChannels}ch`);
 }
+function qualityLabel() {
+  return ({ normal: '自然', voice: '清晰人声', clean: '通透增强' })[val('quality')] || '自然';
+}
+
+function removeHumLabel() {
+  return tog('tg-hum') ? ' · 嗡声抑制' : '';
+}
+
 function addErrCard(name, msg) {
   const div = document.createElement('div');
   div.className = 'err-card';
