@@ -280,8 +280,8 @@ header{display:flex;align-items:center;gap:14px;margin-bottom:2.5rem}
       <label>呼吸声处理</label>
       <select id="breath">
         <option value="0" selected>关闭</option>
-        <option value="1">降低 — 保留自然呼吸感</option>
-        <option value="2">去除 — 更干净的人声</option>
+        <option value="1">降低 — 明显压低呼吸声</option>
+        <option value="2">去除 — 强力压低呼吸声</option>
       </select>
     </div>
     <div class="field">
@@ -846,95 +846,220 @@ function applyNoiseReduction(buffer, level, context) {
 
 // Time-stretch with short overlapping grains. The source pitch is preserved because
 // grains are replayed at their original sample rate and only their timeline changes.
+// ─── 时间拉伸：WSOLA（波形相似叠加），变速不变调，且不会产生颤音 ─────────────────
 function timeStretchBuffer(buffer, startTime, endTime, speed, context) {
-  const start = Math.max(0, Math.floor(startTime * buffer.sampleRate));
-  const end = Math.min(buffer.length, Math.ceil(endTime * buffer.sampleRate));
-  const sourceLength = Math.max(1, end - start);
-  if (speed === 1) {
-    const same = context.createBuffer(buffer.numberOfChannels, sourceLength, buffer.sampleRate);
-    for (let c = 0; c < buffer.numberOfChannels; c++) {
-      same.copyToChannel(buffer.getChannelData(c).subarray(start, end), c);
-    }
+  const sr = buffer.sampleRate, nCh = buffer.numberOfChannels;
+  const start = Math.max(0, Math.floor(startTime * sr));
+  const end = Math.min(buffer.length, Math.ceil(endTime * sr));
+  const srcLen = Math.max(1, end - start);
+  const chans = [];
+  for (let c = 0; c < nCh; c++) chans.push(buffer.getChannelData(c).subarray(start, end));
+
+  if (Math.abs(speed - 1) < 1e-6) {
+    const same = context.createBuffer(nCh, srcLen, sr);
+    for (let c = 0; c < nCh; c++) same.copyToChannel(chans[c], c);
     return same;
   }
 
-  const grain = Math.max(256, Math.round(buffer.sampleRate * 0.04));
-  const analysisHop = Math.max(128, Math.round(grain * 0.5));
-  const synthesisHop = Math.max(1, Math.round(analysisHop / speed));
-  const outputLength = Math.max(grain, Math.ceil(sourceLength / speed) + grain);
-  const stretched = context.createBuffer(buffer.numberOfChannels, outputLength, buffer.sampleRate);
-  const weights = new Float32Array(outputLength);
-  for (let sourcePos = 0, outputPos = 0; sourcePos < sourceLength; sourcePos += analysisHop, outputPos += synthesisHop) {
-    const available = Math.min(grain, sourceLength - sourcePos);
-    for (let i = 0; i < available; i++) {
-      const phase = i / Math.max(1, grain - 1);
-      const window = 0.5 - 0.5 * Math.cos(2 * Math.PI * phase);
-      const target = outputPos + i;
-      if (target >= outputLength) break;
-      weights[target] += window;
-      for (let c = 0; c < buffer.numberOfChannels; c++) {
-        stretched.getChannelData(c)[target] += buffer.getChannelData(c)[start + sourcePos + i] * window;
+  const outLen = Math.max(1, Math.round(srcLen / speed));
+  const grain = 2 * Math.round(sr * 0.04 / 2);   // 约 40ms 的帧（偶数）
+  const half = grain / 2;                        // 输出步长；Hann 窗 50% 重叠，窗和恒为 1
+  const tol = Math.round(sr * 0.015);            // 拼接点搜索范围 ±15ms
+
+  // 降采样(~8kHz)的单声道参考信号，只用来寻找最佳拼接点
+  const f = Math.max(1, Math.round(sr / 8000));
+  const dLen = Math.floor(srcLen / f);
+  const dm = new Float32Array(dLen);
+  for (let j = 0; j < dLen; j++) {
+    let s = 0;
+    for (let c = 0; c < nCh; c++) { const d = chans[c]; for (let k = 0; k < f; k++) s += d[j * f + k]; }
+    dm[j] = s / (f * nCh);
+  }
+
+  const win = new Float32Array(grain);
+  for (let i = 0; i < grain; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / grain);
+
+  const out = [];
+  for (let c = 0; c < nCh; c++) out.push(new Float32Array(outLen + grain));
+
+  const ch0 = chans[0];
+  const nD = Math.floor(half / f);
+  let prev = 0;
+  for (let k = 0, outPos = 0; outPos < outLen; k++, outPos += half) {
+    const nominal = Math.round(outPos * speed);
+    let pos = Math.min(nominal, srcLen - 1);
+
+    if (k > 0) {
+      const ref = prev + half;                         // 上一帧“自然延续”的位置
+      const lo = Math.max(0, nominal - tol);
+      const hi = Math.min(srcLen - grain, nominal + tol);
+      if (hi >= lo && ref + half <= srcLen) {
+        // 1) 降采样域粗搜：找与自然延续波形最相似的位置（归一化互相关）
+        const rD = Math.floor(ref / f);
+        let best = -Infinity, bestD = Math.floor(nominal / f);
+        for (let d = Math.ceil(lo / f), dEnd = Math.floor(hi / f); d <= dEnd; d++) {
+          let dot = 0, en = 1e-9;
+          for (let i = 0; i < nD; i++) { const a = dm[d + i]; dot += a * dm[rD + i]; en += a * a; }
+          const score = dot / Math.sqrt(en);
+          if (score > best) { best = score; bestD = d; }
+        }
+        // 2) 原采样率精搜 ±f 个采样点
+        const center = bestD * f;
+        let bestF = -Infinity;
+        pos = Math.max(lo, Math.min(hi, center));
+        for (let p = Math.max(lo, center - f), pEnd = Math.min(hi, center + f); p <= pEnd; p++) {
+          let dot = 0, en = 1e-9;
+          for (let i = 0; i < half; i += 2) { const a = ch0[p + i]; dot += a * ch0[ref + i]; en += a * a; }
+          const score = dot / Math.sqrt(en);
+          if (score > bestF) { bestF = score; pos = p; }
+        }
+      }
+    }
+    prev = pos;
+
+    const n = Math.min(grain, srcLen - pos);
+    for (let c = 0; c < nCh; c++) {
+      const src = chans[c], o = out[c];
+      for (let i = 0; i < n; i++) {
+        const w = (k === 0 && i < half) ? 1 : win[i];  // 第一帧前半段不淡入
+        o[outPos + i] += src[pos + i] * w;
       }
     }
   }
-  for (let i = 0; i < outputLength; i++) {
-    const weight = weights[i];
-    if (weight > 0) {
-      for (let c = 0; c < buffer.numberOfChannels; c++) stretched.getChannelData(c)[i] /= weight;
-    }
-  }
-  return stretched;
+
+  const result = context.createBuffer(nCh, outLen, sr);
+  for (let c = 0; c < nCh; c++) result.copyToChannel(out[c].subarray(0, outLen), c);
+  return result;
 }
 
 // Breaths are usually quieter broadband noise between voiced frames. Detect them
 // conservatively and apply a smoothed gain envelope instead of hard muting.
+// ─── 吸气声处理：先找出人声，再处理“人声与人声之间的停顿”里高于底噪的声音 ───
+// ─── 吸气声处理：找出“比语音明显轻、且持续一段时间”的安静段（吸气/换气），平滑压低 ───
 function applyBreathReduction(buffer, level, context) {
   if (!level) return buffer;
-  const frameSize = Math.max(128, Math.round(buffer.sampleRate * 0.012));
-  const frameCount = Math.ceil(buffer.length / frameSize);
-  const rms = new Float32Array(frameCount);
-  const zcr = new Float32Array(frameCount);
-  const hfRatio = new Float32Array(frameCount);
-  for (let frame = 0; frame < frameCount; frame++) {
-    const start = frame * frameSize;
-    const end = Math.min(buffer.length, start + frameSize);
-    let energy = 0, crossings = 0, high = 0, total = 0;
-    let previous = 0;
-    for (let i = start; i < end; i++) {
-      let sample = 0;
-      for (let c = 0; c < buffer.numberOfChannels; c++) sample += buffer.getChannelData(c)[i];
-      sample /= buffer.numberOfChannels;
-      energy += sample * sample;
-      high += Math.abs(sample - previous);
-      total += Math.abs(sample);
-      if ((sample >= 0) !== (previous >= 0)) crossings++;
-      previous = sample;
+  const sr = buffer.sampleRate, nCh = buffer.numberOfChannels, len = buffer.length;
+
+  // 可调参数
+  const MAX_CUT_DB      = level === 2 ? 40 : 15; // 去除：最多压 40dB；降低：最多压 15dB
+  const QUIET_BELOW_DB  = 11;   // 比语音电平低 11dB 以上才算“安静段”（吸气声通常比语音低 15~25dB）
+  const MIN_RUN_MS      = 280;  // 安静段持续超过这个时长才处理（句内的轻辅音/字间隙一般 <200ms，不会被碰）
+  const KEEP_AFTER_MS   = 100;  // 紧跟在语音后面的安静段，开头保留这么久（保护句尾拖音/混响尾巴）
+  const KEEP_BEFORE_MS  = 40;   // 紧挨着下一句语音的安静段，结尾保留这么久（保护起音）
+  const VOICED_FRAC_MAX = 0.3;  // 安静段里有基音的帧超过这个比例，说明是轻声说话，不处理
+  const NOISE_MARGIN_DB = 4;    // 高于底噪多少 dB 才算“有声音”
+  const TARGET_ABOVE_FLOOR_DB = 2; // 压低后的目标：底噪 + 2dB（不会把房间底噪也抹没）
+
+  // 1) 降采样到 ~8kHz 单声道
+  const f = Math.max(1, Math.round(sr / 8000));
+  const dsr = sr / f;
+  const dLen = Math.floor(len / f);
+  if (dLen < dsr * 0.5) return buffer;
+  const chans = [];
+  for (let c = 0; c < nCh; c++) chans.push(buffer.getChannelData(c));
+  const dm = new Float32Array(dLen);
+  for (let j = 0; j < dLen; j++) {
+    let s = 0;
+    for (let c = 0; c < nCh; c++) { const d = chans[c]; for (let k = 0; k < f; k++) s += d[j * f + k]; }
+    dm[j] = s / (f * nCh);
+  }
+  const pe = new Float32Array(dLen);                // 预加重（仅用于周期性检测）
+  pe[0] = dm[0];
+  for (let j = 1; j < dLen; j++) pe[j] = dm[j] - 0.95 * dm[j - 1];
+  const cs = new Float64Array(dLen + 1), cd = new Float64Array(dLen + 1); // 能量前缀和
+  for (let j = 0; j < dLen; j++) { cs[j + 1] = cs[j] + pe[j] * pe[j]; cd[j + 1] = cd[j] + dm[j] * dm[j]; }
+
+  // 2) 逐帧电平（帧移 10ms，窗 30ms）
+  const hop = Math.max(1, Math.round(dsr * 0.01));
+  const win = Math.round(dsr * 0.03);
+  const nFrames = Math.floor(dLen / hop);
+  if (nFrames < 30) return buffer;
+  const fs = new Int32Array(nFrames), fe = new Int32Array(nFrames);
+  const rmsDb = new Float32Array(nFrames);
+  for (let i = 0; i < nFrames; i++) {
+    const center = Math.round((i + 0.5) * hop);
+    fs[i] = Math.max(0, center - (win >> 1));
+    fe[i] = Math.min(dLen, fs[i] + win);
+    rmsDb[i] = 10 * Math.log10((cd[fe[i]] - cd[fs[i]]) / Math.max(1, fe[i] - fs[i]) + 1e-12);
+  }
+  const sorted = Array.from(rmsDb).sort((a, b) => a - b);
+  const floorDb = Math.max(sorted[Math.floor(nFrames * 0.05)], -90);  // 底噪
+  const speechDb = sorted[Math.floor(nFrames * 0.90)];                // 语音电平
+  if (speechDb - floorDb < 15) return buffer;       // 动态范围太小，无法区分
+
+  const quietDb = speechDb - QUIET_BELOW_DB;        // 低于它 = 比语音明显轻
+  const noiseLine = floorDb + NOISE_MARGIN_DB;      // 高于它 = 不是纯静音/底噪
+  const targetDb = floorDb + TARGET_ABOVE_FLOOR_DB;
+
+  // 周期性（基音强度），只对候选安静段里的帧按需计算
+  const lagMin = Math.max(2, Math.floor(dsr / 400)), lagMax = Math.ceil(dsr / 70);
+  function periodicity(i) {
+    const s = fs[i], e = fe[i];
+    if (e - s < lagMax * 2) return 0;
+    let best = 0;
+    for (let L = lagMin; L <= lagMax; L++) {
+      let dot = 0;
+      for (let j = s; j < e - L; j++) dot += pe[j] * pe[j + L];
+      const r = dot / Math.sqrt((cs[e - L] - cs[s]) * (cs[e] - cs[s + L]) + 1e-12);
+      if (r > best) { best = r; if (r > 0.9) break; }
     }
-    const count = Math.max(1, end - start);
-    rms[frame] = Math.sqrt(energy / count);
-    zcr[frame] = crossings / count;
-    hfRatio[frame] = high / Math.max(0.0001, total);
+    return best;
   }
-  const sorted = Array.from(rms).sort((a, b) => a - b);
-  const quiet = sorted[Math.floor(sorted.length * 0.2)] || 0.001;
-  const loud = sorted[Math.floor(sorted.length * 0.85)] || quiet;
-  const gains = new Float32Array(frameCount);
-  for (let i = 0; i < frameCount; i++) {
-    const quietEnough = rms[i] > quiet * 1.15 && rms[i] < Math.max(quiet * 7, loud * 0.65);
-    const noisyEnough = zcr[i] > 0.08 && hfRatio[i] > 1.25;
-    gains[i] = quietEnough && noisyEnough ? (level === 2 ? 0.08 : 0.32) : 1;
+
+  // 3) 候选帧：有声音，但比语音轻很多。连成片段（允许 ≤30ms 的小缺口），够长才处理
+  const isCand = i => rmsDb[i] > noiseLine && rmsDb[i] < quietDb;
+  const minF = Math.round(MIN_RUN_MS / 10);
+  const keepAfter = Math.round(KEEP_AFTER_MS / 10), keepBefore = Math.round(KEEP_BEFORE_MS / 10);
+  const raw = new Float32Array(nFrames).fill(1);
+  let runs = 0, runFrames = 0;
+  for (let i = 0; i < nFrames;) {
+    if (!isCand(i)) { i++; continue; }
+    let a = i, b = i, gap = 0;
+    for (let j = i + 1; j < nFrames; j++) {
+      if (isCand(j)) { b = j; gap = 0; }
+      else if (++gap > 3) break;
+    }
+    i = b + 1;
+    if (b - a + 1 < minF) continue;
+
+    // 轻声说话（有持续的基音）不处理
+    let voiced = 0;
+    for (let k = a; k <= b; k++) if (periodicity(k) > 0.7) voiced++;
+    if (voiced > (b - a + 1) * VOICED_FRAC_MAX) continue;
+
+    // 紧挨着语音的两端留出保护
+    let s = a, e = b;
+    if (a > 0 && rmsDb[a - 1] >= quietDb) s += keepAfter;
+    if (b < nFrames - 1 && rmsDb[b + 1] >= quietDb) e -= keepBefore;
+    if (e < s) continue;
+
+    for (let k = s; k <= e; k++) {
+      const cut = Math.min(MAX_CUT_DB, rmsDb[k] - targetDb);
+      if (cut > 0) raw[k] = Math.pow(10, -cut / 20);
+    }
+    runs++; runFrames += e - s + 1;
   }
-  const cleaned = context.createBuffer(buffer.numberOfChannels, buffer.length, buffer.sampleRate);
-  const attack = Math.max(1, Math.round(buffer.sampleRate * 0.015));
-  const release = Math.max(1, Math.round(buffer.sampleRate * 0.08));
-  for (let c = 0; c < buffer.numberOfChannels; c++) {
-    const input = buffer.getChannelData(c), output = cleaned.getChannelData(c);
-    let gain = 1;
-    for (let i = 0; i < buffer.length; i++) {
-      const frame = Math.min(frameCount - 1, Math.floor(i / frameSize));
-      const target = gains[frame];
-      gain += (target - gain) * (target < gain ? 1 / attack : 1 / release);
-      output[i] = input[i] * gain;
+  if (!runs) return buffer;
+  console.log(`[吸气处理] 处理了 ${runs} 段安静声音，共 ${(runFrames / 100).toFixed(1)}s（语音电平 ${speechDb.toFixed(0)}dB，底噪 ${floorDb.toFixed(0)}dB）`);
+
+  // 4) 增益曲线平滑（5 帧滑动平均），再逐采样线性插值
+  const smooth = new Float32Array(nFrames);
+  for (let i = 0; i < nFrames; i++) {
+    let s = 0, n = 0;
+    for (let j = Math.max(0, i - 2); j <= Math.min(nFrames - 1, i + 2); j++) { s += raw[j]; n++; }
+    smooth[i] = s / n;
+  }
+  const hopFull = hop * f;
+  const cleaned = context.createBuffer(nCh, len, sr);
+  for (let c = 0; c < nCh; c++) {
+    const input = chans[c], output = cleaned.getChannelData(c);
+    for (let i = 0; i < len; i++) {
+      const t = i / hopFull - 0.5;
+      const k = Math.floor(t);
+      const k0 = Math.max(0, Math.min(nFrames - 1, k));
+      const k1 = Math.max(0, Math.min(nFrames - 1, k + 1));
+      const fr = Math.max(0, Math.min(1, t - k));
+      output[i] = input[i] * (smooth[k0] + (smooth[k1] - smooth[k0]) * fr);
     }
   }
   return cleaned;
