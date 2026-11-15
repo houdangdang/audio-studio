@@ -84,6 +84,10 @@ header{display:flex;align-items:center;gap:14px;margin-bottom:2.5rem}
 
 .rw{display:flex;align-items:center;gap:10px}
 .rw input[type=range]{flex:1;-webkit-appearance:none;height:3px;background:var(--bg3);border-radius:2px;outline:none;cursor:pointer}
+.speed-control{gap:7px}
+.step-btn{width:28px;height:28px;border:1px solid var(--border2);border-radius:7px;background:var(--bg3);color:var(--text);font-size:17px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.step-btn:hover{border-color:var(--accent);color:var(--accent)}
+.step-btn:disabled{opacity:.35;cursor:not-allowed}
 .rw input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:15px;height:15px;background:var(--accent);border-radius:50%;cursor:pointer}
 .rv{font-family:var(--mono);font-size:12px;color:var(--accent2);min-width:52px;text-align:right}
 
@@ -274,7 +278,12 @@ header{display:flex;align-items:center;gap:14px;margin-bottom:2.5rem}
     </div>
     <div class="field">
       <label>播放速度（变速不变调）</label>
-      <div class="rw"><input type="range" id="spd" min="0.25" max="4" value="1" step="0.05"><span class="rv" id="spd-val">1.00×</span></div>
+      <div class="rw speed-control">
+        <button class="step-btn" id="spd-down" type="button" aria-label="降低倍速" title="降低 0.1 倍速">−</button>
+        <input type="range" id="spd" min="0.5" max="3" value="1" step="0.1" aria-label="播放速度">
+        <button class="step-btn" id="spd-up" type="button" aria-label="提高倍速" title="提高 0.1 倍速">＋</button>
+        <span class="rv" id="spd-val">1.0×</span>
+      </div>
     </div>
     <div class="field">
       <label>淡入时长</label>
@@ -739,7 +748,7 @@ function updatePlayTime() {
 // ─── Range controls ───────────────────────────────────────────────────────
 const ranges = [
   ['vol', v => (v>0?'+':'')+v+' dB'],
-  ['spd', v => parseFloat(v).toFixed(2)+'×'],
+  ['spd', v => parseFloat(v).toFixed(1)+'×'],
   ['fin', v => parseFloat(v).toFixed(1)+' s'],
   ['fout', v => parseFloat(v).toFixed(1)+' s'],
   ['bass', v => (v>0?'+':'')+v+' dB'],
@@ -754,6 +763,15 @@ ranges.forEach(([id,fn]) => {
   const out = document.getElementById(id+'-val');
   if (el && out) el.oninput = () => { out.textContent = fn(el.value); };
 });
+
+function changeSpeed(delta) {
+  const speed = document.getElementById('spd');
+  const next = Math.max(parseFloat(speed.min), Math.min(parseFloat(speed.max), parseFloat(speed.value) + delta));
+  speed.value = next.toFixed(1);
+  speed.dispatchEvent(new Event('input'));
+}
+document.getElementById('spd-down').onclick = () => changeSpeed(-0.1);
+document.getElementById('spd-up').onclick = () => changeSpeed(0.1);
 document.getElementById('mix-mode').onchange = updateMixModeFields;
 updateMixModeFields();
 
@@ -1294,7 +1312,7 @@ document.getElementById('go-btn').onclick = async () => {
       const dur = outBuf.duration;
       const dm = Math.floor(dur/60), ds = String(Math.floor(dur%60)).padStart(2,'0');
       const enhancementMeta = tab === 'enhance'
-        ? ` · 降噪 ${val('denoise') === '0' ? '关闭' : ['','轻度','标准','强力'][parseInt(val('denoise'))]} · ${qualityLabel()}${removeHumLabel()}`
+        ? ` · 倍速 ${parseFloat(val('spd')).toFixed(1)}× · 降噪 ${val('denoise') === '0' ? '关闭' : ['','轻度','标准','强力'][parseInt(val('denoise'))]} · ${qualityLabel()}${removeHumLabel()}`
         : '';
       addResultCard(outName, blob.size, file.size, saved, `时长 ${dm}:${ds} · ${outBuf.sampleRate} Hz · ${outBuf.numberOfChannels}ch${enhancementMeta}`, url, outBuf);
     }
