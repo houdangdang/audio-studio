@@ -277,6 +277,14 @@ header{display:flex;align-items:center;gap:14px;margin-bottom:2.5rem}
       <div class="rw"><input type="range" id="vol" min="-20" max="20" value="0" step="1"><span class="rv" id="vol-val">0 dB</span></div>
     </div>
     <div class="field">
+      <label>呼吸声处理</label>
+      <select id="breath">
+        <option value="0" selected>关闭</option>
+        <option value="1">降低 — 保留自然呼吸感</option>
+        <option value="2">去除 — 更干净的人声</option>
+      </select>
+    </div>
+    <div class="field">
       <label>播放速度（变速不变调）</label>
       <div class="rw speed-control">
         <button class="step-btn" id="spd-down" type="button" aria-label="降低倍速" title="降低 0.1 倍速">−</button>
@@ -836,6 +844,102 @@ function applyNoiseReduction(buffer, level, context) {
   return cleaned;
 }
 
+// Time-stretch with short overlapping grains. The source pitch is preserved because
+// grains are replayed at their original sample rate and only their timeline changes.
+function timeStretchBuffer(buffer, startTime, endTime, speed, context) {
+  const start = Math.max(0, Math.floor(startTime * buffer.sampleRate));
+  const end = Math.min(buffer.length, Math.ceil(endTime * buffer.sampleRate));
+  const sourceLength = Math.max(1, end - start);
+  if (speed === 1) {
+    const same = context.createBuffer(buffer.numberOfChannels, sourceLength, buffer.sampleRate);
+    for (let c = 0; c < buffer.numberOfChannels; c++) {
+      same.copyToChannel(buffer.getChannelData(c).subarray(start, end), c);
+    }
+    return same;
+  }
+
+  const grain = Math.max(256, Math.round(buffer.sampleRate * 0.04));
+  const analysisHop = Math.max(128, Math.round(grain * 0.5));
+  const synthesisHop = Math.max(1, Math.round(analysisHop / speed));
+  const outputLength = Math.max(grain, Math.ceil(sourceLength / speed) + grain);
+  const stretched = context.createBuffer(buffer.numberOfChannels, outputLength, buffer.sampleRate);
+  const weights = new Float32Array(outputLength);
+  for (let sourcePos = 0, outputPos = 0; sourcePos < sourceLength; sourcePos += analysisHop, outputPos += synthesisHop) {
+    const available = Math.min(grain, sourceLength - sourcePos);
+    for (let i = 0; i < available; i++) {
+      const phase = i / Math.max(1, grain - 1);
+      const window = 0.5 - 0.5 * Math.cos(2 * Math.PI * phase);
+      const target = outputPos + i;
+      if (target >= outputLength) break;
+      weights[target] += window;
+      for (let c = 0; c < buffer.numberOfChannels; c++) {
+        stretched.getChannelData(c)[target] += buffer.getChannelData(c)[start + sourcePos + i] * window;
+      }
+    }
+  }
+  for (let i = 0; i < outputLength; i++) {
+    const weight = weights[i];
+    if (weight > 0) {
+      for (let c = 0; c < buffer.numberOfChannels; c++) stretched.getChannelData(c)[i] /= weight;
+    }
+  }
+  return stretched;
+}
+
+// Breaths are usually quieter broadband noise between voiced frames. Detect them
+// conservatively and apply a smoothed gain envelope instead of hard muting.
+function applyBreathReduction(buffer, level, context) {
+  if (!level) return buffer;
+  const frameSize = Math.max(128, Math.round(buffer.sampleRate * 0.012));
+  const frameCount = Math.ceil(buffer.length / frameSize);
+  const rms = new Float32Array(frameCount);
+  const zcr = new Float32Array(frameCount);
+  const hfRatio = new Float32Array(frameCount);
+  for (let frame = 0; frame < frameCount; frame++) {
+    const start = frame * frameSize;
+    const end = Math.min(buffer.length, start + frameSize);
+    let energy = 0, crossings = 0, high = 0, total = 0;
+    let previous = 0;
+    for (let i = start; i < end; i++) {
+      let sample = 0;
+      for (let c = 0; c < buffer.numberOfChannels; c++) sample += buffer.getChannelData(c)[i];
+      sample /= buffer.numberOfChannels;
+      energy += sample * sample;
+      high += Math.abs(sample - previous);
+      total += Math.abs(sample);
+      if ((sample >= 0) !== (previous >= 0)) crossings++;
+      previous = sample;
+    }
+    const count = Math.max(1, end - start);
+    rms[frame] = Math.sqrt(energy / count);
+    zcr[frame] = crossings / count;
+    hfRatio[frame] = high / Math.max(0.0001, total);
+  }
+  const sorted = Array.from(rms).sort((a, b) => a - b);
+  const quiet = sorted[Math.floor(sorted.length * 0.2)] || 0.001;
+  const loud = sorted[Math.floor(sorted.length * 0.85)] || quiet;
+  const gains = new Float32Array(frameCount);
+  for (let i = 0; i < frameCount; i++) {
+    const quietEnough = rms[i] > quiet * 1.15 && rms[i] < Math.max(quiet * 7, loud * 0.65);
+    const noisyEnough = zcr[i] > 0.08 && hfRatio[i] > 1.25;
+    gains[i] = quietEnough && noisyEnough ? (level === 2 ? 0.08 : 0.32) : 1;
+  }
+  const cleaned = context.createBuffer(buffer.numberOfChannels, buffer.length, buffer.sampleRate);
+  const attack = Math.max(1, Math.round(buffer.sampleRate * 0.015));
+  const release = Math.max(1, Math.round(buffer.sampleRate * 0.08));
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const input = buffer.getChannelData(c), output = cleaned.getChannelData(c);
+    let gain = 1;
+    for (let i = 0; i < buffer.length; i++) {
+      const frame = Math.min(frameCount - 1, Math.floor(i / frameSize));
+      const target = gains[frame];
+      gain += (target - gain) * (target < gain ? 1 / attack : 1 / release);
+      output[i] = input[i] * gain;
+    }
+  }
+  return cleaned;
+}
+
 // Apply effects using OfflineAudioContext
 async function processBuffer(srcBuf, tab) {
   const origSR = srcBuf.sampleRate;
@@ -847,7 +951,7 @@ async function processBuffer(srcBuf, tab) {
   let targetSR = origSR, targetCh = origCh;
   let speed = 1, volDb = 0, fadeIn = 0, fadeOut = 0;
   let bassGain = 0, trebleGain = 0, midGain = 0;
-  let denoiseLevel = 0, qualityMode = 'normal', removeHum = false;
+  let denoiseLevel = 0, breathLevel = 0, qualityMode = 'normal', removeHum = false;
   let swapLR = false, doReverse = false, normalize = false;
   let trimStart = 0, trimEnd = origDur;
 
@@ -871,6 +975,7 @@ async function processBuffer(srcBuf, tab) {
     trebleGain = parseFloat(val('treble'));
     midGain = parseFloat(val('mid'));
     denoiseLevel = parseInt(val('denoise') || '0');
+    breathLevel = parseInt(val('breath') || '0');
     qualityMode = val('quality');
     removeHum = tog('tg-hum');
     swapLR = tog('tg-swap');
@@ -917,9 +1022,15 @@ async function processBuffer(srcBuf, tab) {
   if (tab === 'enhance' && denoiseLevel) {
     workBuf = applyNoiseReduction(workBuf, denoiseLevel, offline);
   }
+  if (tab === 'enhance' && breathLevel) {
+    workBuf = applyBreathReduction(workBuf, breathLevel, offline);
+  }
+  const isTimeStretching = tab === 'enhance';
+  if (isTimeStretching) {
+    workBuf = timeStretchBuffer(workBuf, trimStart, trimEnd, speed, offline);
+  }
 
   src.buffer = workBuf;
-  src.playbackRate.value = speed;
 
   // Chain nodes
   let node = src;
@@ -1001,7 +1112,8 @@ async function processBuffer(srcBuf, tab) {
   }
 
   node.connect(offline.destination);
-  src.start(0, trimStart, trimEnd - trimStart);
+  if (isTimeStretching) src.start(0);
+  else src.start(0, trimStart, trimEnd - trimStart);
 
   return offline.startRendering();
 }
@@ -1312,7 +1424,7 @@ document.getElementById('go-btn').onclick = async () => {
       const dur = outBuf.duration;
       const dm = Math.floor(dur/60), ds = String(Math.floor(dur%60)).padStart(2,'0');
       const enhancementMeta = tab === 'enhance'
-        ? ` · 倍速 ${parseFloat(val('spd')).toFixed(1)}× · 降噪 ${val('denoise') === '0' ? '关闭' : ['','轻度','标准','强力'][parseInt(val('denoise'))]} · ${qualityLabel()}${removeHumLabel()}`
+        ? ` · 倍速 ${parseFloat(val('spd')).toFixed(1)}× · 呼吸声 ${['关闭','降低','去除'][parseInt(val('breath')) || 0]} · 降噪 ${val('denoise') === '0' ? '关闭' : ['','轻度','标准','强力'][parseInt(val('denoise'))]} · ${qualityLabel()}${removeHumLabel()}`
         : '';
       addResultCard(outName, blob.size, file.size, saved, `时长 ${dm}:${ds} · ${outBuf.sampleRate} Hz · ${outBuf.numberOfChannels}ch${enhancementMeta}`, url, outBuf);
     }
